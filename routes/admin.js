@@ -191,43 +191,58 @@ router.get('/batches/:id/materials', async (req, res) => {
 
 // Add material to batch
 router.post('/batches/:id/materials', [
-  body('name').notEmpty().trim(),
-  body('type').isIn(['document', 'video', 'audio', 'link', 'image']),
-  body('url').isURL(),
+  body('name').notEmpty().trim().withMessage('Material name is required'),
+  body('type').isIn(['document', 'video', 'audio', 'link', 'image']).withMessage('Valid material type is required'),
+  body('url').isURL().withMessage('Valid URL is required'),
   body('description').optional(),
-  body('session_number').optional().isInt({ min: 1 }),
+  body('session_number').optional().isInt({ min: 1 }).withMessage('Session number must be a positive integer'),
   body('is_required').optional().isBoolean()
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+      console.error('❌ Validation errors:', errors.array());
+      return res.status(400).json({ 
+        error: 'Validation failed',
+        details: errors.array().map(err => `${err.param}: ${err.msg}`).join(', '),
+        validation_errors: errors.array()
+      });
     }
 
     const batchId = req.params.id;
     const { name, type, url, description, session_number, is_required } = req.body;
+
+    console.log('🔍 Received material data:', { name, type, url, description, session_number, is_required });
 
     const batch = await Batch.findByPk(batchId);
     if (!batch) {
       return res.status(404).json({ error: 'Batch not found' });
     }
 
+    console.log('✅ Batch found, current materials:', batch.materials);
+
     const materialData = {
-      name,
+      name: name.trim(),
       type,
       url,
-      description: description || '',
+      description: description?.trim() || '',
       is_required: is_required || false
     };
+
+    console.log('🔍 Processed material data:', materialData);
 
     let updatedBatch;
     if (session_number) {
       // Add to session materials
+      console.log(`📝 Adding to session ${session_number}`);
       updatedBatch = await batch.addSessionMaterial(session_number, materialData, req.user.id);
     } else {
       // Add to course materials
+      console.log('📚 Adding to course materials');
       updatedBatch = await batch.addCourseMaterial(materialData, req.user.id);
     }
+
+    console.log('✅ Material added successfully, updated materials:', updatedBatch.materials);
 
     res.json({
       message: 'Material added successfully',
@@ -236,8 +251,13 @@ router.post('/batches/:id/materials', [
     });
 
   } catch (error) {
-    console.error('Add material error:', error);
-    res.status(500).json({ error: 'Failed to add material' });
+    console.error('❌ Add material error:', error);
+    console.error('❌ Error stack:', error.stack);
+    res.status(500).json({ 
+      error: 'Failed to add material',
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
