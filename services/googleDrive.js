@@ -1,3 +1,6 @@
+// services/googleDrive.js
+const { google } = require('googleapis');
+
 class GoogleDriveService {
   constructor() {
     this.auth = new google.auth.GoogleAuth({
@@ -68,3 +71,5 @@ class GoogleDriveService {
     }
   }
 }
+
+module.exports = GoogleDriveService;
