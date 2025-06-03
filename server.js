@@ -15,6 +15,9 @@ const { errorHandler } = require('./middleware/errorHandler');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// FIXED: Trust proxy for Render deployment
+app.set('trust proxy', 1);
+
 // Security middleware
 app.use(helmet());
 app.use(cors({
@@ -26,17 +29,19 @@ app.use(cors({
   credentials: true
 }));
 
-// Rate limiting
+// Rate limiting - FIXED: Now works with proxy
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
+  max: 100, // limit each IP to 100 requests per windowMs
+  trustProxy: true
 });
 app.use('/api/', limiter);
 
 // Stricter rate limiting for auth endpoints
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10
+  max: 10,
+  trustProxy: true
 });
 app.use('/api/auth/', authLimiter);
 
