@@ -1,3 +1,4 @@
+// services/scheduling.js
 const moment = require('moment-timezone');
 
 class SchedulingService {
@@ -136,4 +137,4 @@ class SchedulingService {
   }
 }
 
-module.exports = { GoogleMeetService, GoogleDriveService, SchedulingService };
+module.exports = SchedulingService;
