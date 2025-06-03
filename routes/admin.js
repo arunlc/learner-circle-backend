@@ -254,11 +254,12 @@ router.post('/batches', [
 
 router.get('/batches', async (req, res) => {
   try {
-    const { status, course_id } = req.query;
+    const { status, course_id, batch_id } = req.query;
     const where = {};
     
     if (status) where.status = status;
     if (course_id) where.course_id = course_id;
+    if (batch_id) where.id = batch_id;
 
     const batches = await Batch.findAll({
       where,
@@ -322,7 +323,41 @@ router.put('/batches/:id', [
   }
 });
 
-// NEW: Get sessions for specific batch
+// Get specific batch details
+router.get('/batches/:id', async (req, res) => {
+  try {
+    const batchId = req.params.id;
+
+    const batch = await Batch.findByPk(batchId, {
+      include: [
+        { model: Course, as: 'course' },
+        { model: User, as: 'currentTutor' },
+        {
+          model: Enrollment,
+          as: 'enrollments',
+          include: [{ model: User, as: 'student' }]
+        },
+        {
+          model: Session,
+          as: 'sessions',
+          include: [{ model: User, as: 'assignedTutor' }],
+          order: [['session_number', 'ASC']]
+        }
+      ]
+    });
+
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+
+    res.json(batch);
+  } catch (error) {
+    console.error('Get batch error:', error);
+    res.status(500).json({ error: 'Failed to fetch batch' });
+  }
+});
+
+// Get sessions for specific batch
 router.get('/batches/:id/sessions', async (req, res) => {
   try {
     const batchId = req.params.id;
@@ -330,7 +365,12 @@ router.get('/batches/:id/sessions', async (req, res) => {
     const batch = await Batch.findByPk(batchId, {
       include: [
         { model: Course, as: 'course' },
-        { model: User, as: 'currentTutor' }
+        { model: User, as: 'currentTutor' },
+        {
+          model: Enrollment,
+          as: 'enrollments',
+          include: [{ model: User, as: 'student' }]
+        }
       ]
     });
 
@@ -379,7 +419,7 @@ router.get('/batches/:id/sessions', async (req, res) => {
   }
 });
 
-// NEW: Sessions Dashboard
+// Sessions Dashboard
 router.get('/sessions/dashboard', async (req, res) => {
   try {
     const { filter, date, tutor_id, course_id, status } = req.query;
@@ -524,7 +564,214 @@ router.get('/sessions/dashboard', async (req, res) => {
   }
 });
 
-// NEW: Get alerts
+// SESSION MANAGEMENT ROUTES (NEW)
+
+// Get specific session details
+router.get('/sessions/:id', async (req, res) => {
+  try {
+    const sessionId = req.params.id;
+
+    const session = await Session.findByPk(sessionId, {
+      include: [
+        {
+          model: Batch,
+          as: 'batch',
+          include: [
+            { model: Course, as: 'course' },
+            { model: User, as: 'currentTutor' },
+            {
+              model: Enrollment,
+              as: 'enrollments',
+              include: [{ model: User, as: 'student' }]
+            }
+          ]
+        },
+        { model: User, as: 'assignedTutor' }
+      ]
+    });
+
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    res.json(session);
+  } catch (error) {
+    console.error('Get session details error:', error);
+    res.status(500).json({ error: 'Failed to fetch session details' });
+  }
+});
+
+// Update session (general update)
+router.put('/sessions/:id', [
+  body('status').optional().isIn(['Scheduled', 'Completed', 'Cancelled', 'Rescheduled']),
+  body('scheduled_datetime').optional().isISO8601(),
+  body('tutor_notes').optional(),
+  body('attendance').optional().isObject()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const sessionId = req.params.id;
+    const updateData = req.body;
+
+    const [updatedRowsCount] = await Session.update(updateData, {
+      where: { id: sessionId }
+    });
+
+    if (updatedRowsCount === 0) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const updatedSession = await Session.findByPk(sessionId, {
+      include: [
+        {
+          model: Batch,
+          as: 'batch',
+          include: [{ model: Course, as: 'course' }]
+        },
+        { model: User, as: 'assignedTutor' }
+      ]
+    });
+
+    res.json({
+      message: 'Session updated successfully',
+      session: updatedSession
+    });
+
+  } catch (error) {
+    console.error('Update session error:', error);
+    res.status(500).json({ error: 'Failed to update session' });
+  }
+});
+
+// Reschedule session with cascade effect
+router.put('/sessions/:id/reschedule', [
+  body('new_datetime').isISO8601(),
+  body('reason').optional()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const sessionId = req.params.id;
+    const { new_datetime, reason } = req.body;
+
+    // Get the session to reschedule
+    const session = await Session.findByPk(sessionId, {
+      include: [{ model: Batch, as: 'batch' }]
+    });
+
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const originalDateTime = new Date(session.scheduled_datetime);
+    const newDateTime = new Date(new_datetime);
+    const timeDifference = newDateTime.getTime() - originalDateTime.getTime();
+
+    // Update the current session
+    await session.update({
+      scheduled_datetime: new_datetime,
+      status: 'Rescheduled',
+      tutor_notes: reason || 'Rescheduled by admin'
+    });
+
+    // Cascade reschedule: Update all subsequent sessions in the same batch
+    let cascadedSessions = [];
+    if (timeDifference !== 0) {
+      const subsequentSessions = await Session.findAll({
+        where: {
+          batch_id: session.batch_id,
+          session_number: { [require('sequelize').Op.gt]: session.session_number },
+          status: 'Scheduled'
+        }
+      });
+
+      for (const subsequentSession of subsequentSessions) {
+        const currentDateTime = new Date(subsequentSession.scheduled_datetime);
+        const newSubsequentDateTime = new Date(currentDateTime.getTime() + timeDifference);
+        
+        await subsequentSession.update({
+          scheduled_datetime: newSubsequentDateTime
+        });
+      }
+      cascadedSessions = subsequentSessions;
+    }
+
+    res.json({
+      message: 'Session rescheduled successfully with cascade updates',
+      session: await Session.findByPk(sessionId, {
+        include: [
+          { model: Batch, as: 'batch', include: [{ model: Course, as: 'course' }] },
+          { model: User, as: 'assignedTutor' }
+        ]
+      }),
+      cascaded_sessions: cascadedSessions?.length || 0
+    });
+
+  } catch (error) {
+    console.error('Reschedule session error:', error);
+    res.status(500).json({ error: 'Failed to reschedule session' });
+  }
+});
+
+// Mark attendance for a session
+router.post('/sessions/:id/attendance', [
+  body('attendance').isObject()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const sessionId = req.params.id;
+    const { attendance } = req.body;
+
+    const session = await Session.findByPk(sessionId);
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    // Update session with attendance and mark as completed
+    await session.update({
+      attendance,
+      status: 'Completed'
+    });
+
+    // Calculate attendance statistics
+    const attendanceEntries = Object.values(attendance);
+    const totalStudents = attendanceEntries.length;
+    const presentCount = attendanceEntries.filter(status => status === 'present').length;
+    const attendanceRate = totalStudents > 0 ? Math.round((presentCount / totalStudents) * 100) : 0;
+
+    res.json({
+      message: 'Attendance marked successfully',
+      session: await Session.findByPk(sessionId, {
+        include: [
+          { model: Batch, as: 'batch', include: [{ model: Course, as: 'course' }] },
+          { model: User, as: 'assignedTutor' }
+        ]
+      }),
+      attendance_stats: {
+        total: totalStudents,
+        present: presentCount,
+        rate: attendanceRate
+      }
+    });
+
+  } catch (error) {
+    console.error('Mark attendance error:', error);
+    res.status(500).json({ error: 'Failed to mark attendance' });
+  }
+});
+
+// Get alerts
 router.get('/alerts', async (req, res) => {
   try {
     const alerts = [];
@@ -601,7 +848,7 @@ router.get('/alerts', async (req, res) => {
   }
 });
 
-// User management (keeping existing code)
+// User management
 router.post('/users', [
   body('email').isEmail().normalizeEmail(),
   body('password').isLength({ min: 6 }),
