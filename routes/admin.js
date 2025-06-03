@@ -181,8 +181,8 @@ router.post('/batches', [
       return res.status(404).json({ error: 'Course not found' });
     }
 
-    // Use provided total_sessions or fall back to course suggested_sessions
-    const sessionCount = total_sessions || course.suggested_sessions || 8;
+    // Use provided total_sessions or fall back to course total_sessions
+    const sessionCount = total_sessions || course.total_sessions || 8;
 
     // Generate batch number
     const lastBatch = await Batch.findOne({
@@ -201,7 +201,7 @@ router.post('/batches', [
       max_students,
       schedule,
       status: 'Active',
-      total_sessions: sessionCount
+      total_sessions: sessionCount  // Store actual sessions for this batch
     });
 
     // Generate sessions using scheduling service
@@ -216,17 +216,22 @@ router.post('/batches', [
       curriculum: course.curriculum
     });
 
-    // Create Google Meet links for sessions
-    const googleMeetService = new GoogleMeetService();
-    for (const sessionData of sessions) {
-      try {
-        const meetingData = await googleMeetService.createSessionMeeting(sessionData, batch);
-        sessionData.gmeet_link = meetingData.meet_link;
-        sessionData.gmeet_meeting_id = meetingData.meeting_id;
-      } catch (error) {
-        console.error('Google Meet creation failed for session:', sessionData.session_number, error);
-        // Continue without meet link for now
+    // Create Google Meet links for sessions (with error handling)
+    try {
+      const googleMeetService = new GoogleMeetService();
+      for (const sessionData of sessions) {
+        try {
+          const meetingData = await googleMeetService.createSessionMeeting(sessionData, batch);
+          sessionData.gmeet_link = meetingData.meet_link;
+          sessionData.gmeet_meeting_id = meetingData.meeting_id;
+        } catch (error) {
+          console.error('Google Meet creation failed for session:', sessionData.session_number, error);
+          // Continue without meet link for now
+        }
       }
+    } catch (error) {
+      console.error('Google Meet service initialization failed:', error);
+      // Continue without Google Meet integration
     }
 
     // Bulk create sessions
