@@ -210,64 +210,71 @@ router.post('/batches', [
 
     // FIXED SESSION CREATION - Handle multiple days per week
     const sessions = [];
-    const startDate = new Date(start_date);
+const startDate = new Date(start_date);
+
+// Map day names to numbers (Sunday = 0)
+const dayMap = {
+  'Sunday': 0, 'Monday': 1, 'Tuesday': 2, 'Wednesday': 3,
+  'Thursday': 4, 'Friday': 5, 'Saturday': 6
+};
+
+console.log(`Creating ${sessionCount} sessions for schedule:`, schedule);
+
+// Create a list of all session dates first
+const sessionDates = [];
+let currentDate = new Date(startDate);
+let sessionNumber = 1;
+
+// Keep generating dates until we have enough sessions
+while (sessionDates.length < sessionCount) {
+  // Check each day of the week to see if it matches our schedule
+  const currentDayNumber = currentDate.getDay();
+  const currentDayName = Object.keys(dayMap).find(day => dayMap[day] === currentDayNumber);
+  
+  // Check if current day matches any of our scheduled days
+  const scheduleMatch = schedule.find(item => item.day === currentDayName);
+  
+  if (scheduleMatch) {
+    // This day matches our schedule, add a session
+    const sessionDateTime = new Date(currentDate);
+    const [hours, minutes] = scheduleMatch.time.split(':');
+    sessionDateTime.setHours(parseInt(hours), parseInt(minutes), 0, 0);
     
-    // Map day names to numbers (Sunday = 0)
-    const dayMap = {
-      'Sunday': 0, 'Monday': 1, 'Tuesday': 2, 'Wednesday': 3,
-      'Thursday': 4, 'Friday': 5, 'Saturday': 6
-    };
+    sessionDates.push({
+      sessionNumber: sessionNumber++,
+      dateTime: new Date(sessionDateTime),
+      day: currentDayName
+    });
+    
+    console.log(`Session ${sessionNumber - 1}: ${currentDayName} ${sessionDateTime.toISOString()}`);
+  }
+  
+  // Move to next day
+  currentDate.setDate(currentDate.getDate() + 1);
+  
+  // Safety check to prevent infinite loop
+  if (currentDate.getTime() > startDate.getTime() + (365 * 24 * 60 * 60 * 1000)) {
+    console.error('Session creation exceeded 1 year, breaking to prevent infinite loop');
+    break;
+  }
+}
 
-    let sessionNumber = 1;
-    let currentWeek = 0;
-    const maxWeeks = Math.ceil(sessionCount / schedule.length);
+// Now create the session objects
+sessionDates.forEach(sessionInfo => {
+  sessions.push({
+    batch_id: batch.id,
+    session_number: sessionInfo.sessionNumber,
+    curriculum_topic: `Session ${sessionInfo.sessionNumber}`,
+    scheduled_datetime: sessionInfo.dateTime,
+    assigned_tutor_id: current_tutor_id,
+    status: 'Scheduled'
+  });
+});
 
-    console.log(`Creating ${sessionCount} sessions across ${schedule.length} days per week for ${maxWeeks} weeks`);
+console.log(`Created ${sessions.length} sessions total`);
 
-    while (sessionNumber <= sessionCount && currentWeek < maxWeeks) {
-      // For each week, create sessions for each scheduled day
-      for (const scheduleItem of schedule) {
-        if (sessionNumber > sessionCount) break;
-
-        const dayNumber = dayMap[scheduleItem.day];
-        const [hours, minutes] = scheduleItem.time.split(':');
-
-        // Calculate the date for this session
-        const sessionDate = new Date(startDate);
-        
-        // Move to the start of the current week
-        const startOfWeek = new Date(startDate);
-        startOfWeek.setDate(startDate.getDate() + (currentWeek * 7));
-        
-        // Find the next occurrence of the target day
-        const daysToAdd = (dayNumber - startOfWeek.getDay() + 7) % 7;
-        sessionDate.setDate(startOfWeek.getDate() + daysToAdd);
-        
-        // Set the time
-        sessionDate.setHours(parseInt(hours), parseInt(minutes), 0, 0);
-
-        // Only create session if it's on or after the start date
-        if (sessionDate >= startDate) {
-          sessions.push({
-            batch_id: batch.id,
-            session_number: sessionNumber,
-            curriculum_topic: `Session ${sessionNumber}`,
-            scheduled_datetime: sessionDate,
-            assigned_tutor_id: current_tutor_id,
-            status: 'Scheduled'
-          });
-
-          console.log(`Session ${sessionNumber}: ${scheduleItem.day} ${sessionDate.toISOString()}`);
-          sessionNumber++;
-        }
-      }
-      currentWeek++;
-    }
-
-    console.log(`Created ${sessions.length} sessions`);
-
-    // Bulk create sessions
-    await Session.bulkCreate(sessions);
+// Bulk create sessions
+await Session.bulkCreate(sessions);
 
     // Return batch with sessions
     const batchWithSessions = await Batch.findByPk(batch.id, {
