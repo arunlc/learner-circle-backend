@@ -1251,36 +1251,5 @@ router.delete('/users/:id', async (req, res) => {
     res.status(500).json({ error: 'Failed to delete user' });
   }
 });
-// TEMPORARY FIX: Add materials column
-router.post('/fix-materials', async (req, res) => {
-  try {
-    const { sequelize } = require('../config/database');
-    
-    console.log('🔧 Adding materials column to Batches table...');
-    
-    await sequelize.query(`
-      ALTER TABLE "Batches" ADD COLUMN IF NOT EXISTS materials JSONB DEFAULT '{"course_materials": [], "session_materials": {}}'::jsonb;
-    `);
-    
-    await sequelize.query(`
-      UPDATE "Batches" SET materials = '{"course_materials": [], "session_materials": {}}'::jsonb WHERE materials IS NULL;
-    `);
-    
-    await sequelize.query(`
-      CREATE INDEX IF NOT EXISTS batches_materials_idx ON "Batches" USING gin (materials);
-    `);
-    
-    console.log('✅ Materials column added successfully');
-    res.json({ 
-      success: true,
-      message: 'Materials column added successfully!' 
-    });
-  } catch (error) {
-    console.error('❌ Fix error:', error);
-    res.status(500).json({ 
-      success: false,
-      error: error.message 
-    });
-  }
-});
+
 module.exports = router;
