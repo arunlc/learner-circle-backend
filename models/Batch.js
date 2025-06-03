@@ -108,8 +108,14 @@ const Batch = sequelize.define('Batch', {
 });
 
 // Helper methods for materials management
+// Replace the methods in your Batch.js with these enhanced versions:
+
+// Helper methods for materials management
 Batch.prototype.addCourseMaterial = function(material, addedByUserId) {
+  console.log('🔍 addCourseMaterial called with:', { material, addedByUserId });
+  
   const materials = this.materials || { course_materials: [], session_materials: {} };
+  console.log('🔍 Current materials:', materials);
   
   const newMaterial = {
     id: require('uuid').v4(),
@@ -118,11 +124,17 @@ Batch.prototype.addCourseMaterial = function(material, addedByUserId) {
     added_at: new Date().toISOString()
   };
   
+  console.log('🔍 New material object:', newMaterial);
+  
   materials.course_materials.push(newMaterial);
+  console.log('🔍 Updated materials:', materials);
+  
   return this.update({ materials });
 };
 
 Batch.prototype.addSessionMaterial = function(sessionNumber, material, addedByUserId) {
+  console.log('🔍 addSessionMaterial called with:', { sessionNumber, material, addedByUserId });
+  
   const materials = this.materials || { course_materials: [], session_materials: {} };
   
   if (!materials.session_materials[sessionNumber]) {
@@ -136,11 +148,17 @@ Batch.prototype.addSessionMaterial = function(sessionNumber, material, addedByUs
     added_at: new Date().toISOString()
   };
   
+  console.log('🔍 New session material object:', newMaterial);
+  
   materials.session_materials[sessionNumber].push(newMaterial);
+  console.log('🔍 Updated session materials:', materials);
+  
   return this.update({ materials });
 };
 
 Batch.prototype.removeMaterial = function(materialId, sessionNumber = null) {
+  console.log('🔍 removeMaterial called with:', { materialId, sessionNumber });
+  
   const materials = this.materials || { course_materials: [], session_materials: {} };
   
   if (sessionNumber) {
@@ -155,6 +173,7 @@ Batch.prototype.removeMaterial = function(materialId, sessionNumber = null) {
       .filter(mat => mat.id !== materialId);
   }
   
+  console.log('🔍 Materials after removal:', materials);
   return this.update({ materials });
 };
 
