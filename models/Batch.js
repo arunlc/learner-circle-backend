@@ -1,3 +1,5 @@
+// models/Batch.js - Enhanced with Materials Support
+
 const { DataTypes } = require('sequelize');
 const { sequelize } = require('../config/database');
 
@@ -58,11 +60,130 @@ const Batch = sequelize.define('Batch', {
       current_session: 1,
       completed_sessions: 0
     }
+  },
+  // NEW: Materials Management
+  materials: {
+    type: DataTypes.JSONB,
+    defaultValue: {
+      course_materials: [], // Available to all sessions
+      session_materials: {} // Specific to sessions
+    }
+    /* 
+    Structure:
+    {
+      course_materials: [
+        {
+          id: "mat_uuid",
+          name: "Main Textbook",
+          type: "document", // document, video, audio, link, image
+          url: "https://drive.google.com/...",
+          description: "Course reference book",
+          added_by: "user_uuid",
+          added_at: "2024-01-15T10:30:00Z",
+          is_required: true
+        }
+      ],
+      session_materials: {
+        "1": [
+          {
+            id: "mat_uuid",
+            name: "Session 1 Worksheet",
+            type: "document",
+            url: "https://drive.google.com/...",
+            description: "Practice problems for session 1",
+            added_by: "user_uuid",
+            added_at: "2024-01-15T10:30:00Z"
+          }
+        ],
+        "3": [...],
+        "5": [...]
+      }
+    }
+    */
   }
 }, {
   timestamps: true,
   createdAt: 'created_at',
   updatedAt: 'updated_at'
 });
+
+// Helper methods for materials management
+Batch.prototype.addCourseMaterial = function(material, addedByUserId) {
+  const materials = this.materials || { course_materials: [], session_materials: {} };
+  
+  const newMaterial = {
+    id: require('uuid').v4(),
+    ...material,
+    added_by: addedByUserId,
+    added_at: new Date().toISOString()
+  };
+  
+  materials.course_materials.push(newMaterial);
+  return this.update({ materials });
+};
+
+Batch.prototype.addSessionMaterial = function(sessionNumber, material, addedByUserId) {
+  const materials = this.materials || { course_materials: [], session_materials: {} };
+  
+  if (!materials.session_materials[sessionNumber]) {
+    materials.session_materials[sessionNumber] = [];
+  }
+  
+  const newMaterial = {
+    id: require('uuid').v4(),
+    ...material,
+    added_by: addedByUserId,
+    added_at: new Date().toISOString()
+  };
+  
+  materials.session_materials[sessionNumber].push(newMaterial);
+  return this.update({ materials });
+};
+
+Batch.prototype.removeMaterial = function(materialId, sessionNumber = null) {
+  const materials = this.materials || { course_materials: [], session_materials: {} };
+  
+  if (sessionNumber) {
+    // Remove from session materials
+    if (materials.session_materials[sessionNumber]) {
+      materials.session_materials[sessionNumber] = materials.session_materials[sessionNumber]
+        .filter(mat => mat.id !== materialId);
+    }
+  } else {
+    // Remove from course materials
+    materials.course_materials = materials.course_materials
+      .filter(mat => mat.id !== materialId);
+  }
+  
+  return this.update({ materials });
+};
+
+Batch.prototype.getStudentMaterials = function() {
+  const materials = this.materials || { course_materials: [], session_materials: {} };
+  
+  // Return materials organized for student view
+  return {
+    course_materials: materials.course_materials.map(mat => ({
+      id: mat.id,
+      name: mat.name,
+      type: mat.type,
+      url: mat.url,
+      description: mat.description,
+      is_required: mat.is_required,
+      added_at: mat.added_at
+    })),
+    session_materials: Object.keys(materials.session_materials).reduce((acc, sessionNum) => {
+      acc[sessionNum] = materials.session_materials[sessionNum].map(mat => ({
+        id: mat.id,
+        name: mat.name,
+        type: mat.type,
+        url: mat.url,
+        description: mat.description,
+        added_at: mat.added_at
+      }));
+      return acc;
+    }, {})
+  };
+};
 
 module.exports = Batch;
