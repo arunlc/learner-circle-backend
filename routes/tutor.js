@@ -323,5 +323,298 @@ router.get('/materials/:batchId', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch materials' });
   }
 });
+// Get materials for tutor's assigned batches
+router.get('/materials', async (req, res) => {
+  try {
+    const tutorId = req.user.id;
+
+    const batches = await Batch.findAll({
+      where: {
+        current_tutor_id: tutorId,
+        status: 'Active'
+      },
+      include: [
+        { model: Course, as: 'course' },
+        {
+          model: Session,
+          as: 'sessions',
+          attributes: ['id', 'session_number', 'curriculum_topic', 'scheduled_datetime', 'status'],
+          order: [['session_number', 'ASC']]
+        }
+      ]
+    });
+
+    const batchMaterials = batches.map(batch => {
+      const materials = batch.materials || { course_materials: [], session_materials: {} };
+      
+      return {
+        batch_id: batch.id,
+        batch_name: batch.batch_name,
+        course: {
+          id: batch.course.id,
+          name: batch.course.name
+        },
+        materials: {
+          course_materials: materials.course_materials,
+          session_materials: materials.session_materials
+        },
+        sessions: batch.sessions
+      };
+    });
+
+    res.json(batchMaterials);
+
+  } catch (error) {
+    console.error('Tutor materials error:', error);
+    res.status(500).json({ error: 'Failed to fetch materials' });
+  }
+});
+
+// Get materials for specific batch (if tutor is assigned)
+router.get('/batches/:batchId/materials', async (req, res) => {
+  try {
+    const tutorId = req.user.id;
+    const batchId = req.params.batchId;
+
+    const batch = await Batch.findOne({
+      where: {
+        id: batchId,
+        current_tutor_id: tutorId
+      },
+      include: [
+        { model: Course, as: 'course' },
+        {
+          model: Session,
+          as: 'sessions',
+          attributes: ['id', 'session_number', 'curriculum_topic', 'scheduled_datetime', 'status'],
+          order: [['session_number', 'ASC']]
+        }
+      ]
+    });
+
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found or access denied' });
+    }
+
+    res.json({
+      batch: batch.toJSON(),
+      materials: batch.materials || { course_materials: [], session_materials: {} }
+    });
+
+  } catch (error) {
+    console.error('Batch materials error:', error);
+    res.status(500).json({ error: 'Failed to fetch batch materials' });
+  }
+});
+
+// Add material to assigned batch
+router.post('/batches/:batchId/materials', [
+  body('name').notEmpty().trim(),
+  body('type').isIn(['document', 'video', 'audio', 'link', 'image']),
+  body('url').isURL(),
+  body('description').optional(),
+  body('session_number').optional().isInt({ min: 1 }),
+  body('is_required').optional().isBoolean()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const tutorId = req.user.id;
+    const batchId = req.params.batchId;
+    const { name, type, url, description, session_number, is_required } = req.body;
+
+    const batch = await Batch.findOne({
+      where: {
+        id: batchId,
+        current_tutor_id: tutorId
+      }
+    });
+
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found or access denied' });
+    }
+
+    const materialData = {
+      name,
+      type,
+      url,
+      description: description || '',
+      is_required: is_required || false
+    };
+
+    let updatedBatch;
+    if (session_number) {
+      // Add to session materials
+      updatedBatch = await batch.addSessionMaterial(session_number, materialData, tutorId);
+    } else {
+      // Add to course materials
+      updatedBatch = await batch.addCourseMaterial(materialData, tutorId);
+    }
+
+    res.json({
+      message: 'Material added successfully',
+      batch: updatedBatch.toJSON(),
+      materials: updatedBatch.materials
+    });
+
+  } catch (error) {
+    console.error('Add material error:', error);
+    res.status(500).json({ error: 'Failed to add material' });
+  }
+});
+
+// Remove material from assigned batch
+router.delete('/batches/:batchId/materials/:materialId', async (req, res) => {
+  try {
+    const tutorId = req.user.id;
+    const { batchId, materialId } = req.params;
+    const { session_number } = req.query;
+
+    const batch = await Batch.findOne({
+      where: {
+        id: batchId,
+        current_tutor_id: tutorId
+      }
+    });
+
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found or access denied' });
+    }
+
+    // Verify tutor can delete this material (only materials they added)
+    const materials = batch.materials || { course_materials: [], session_materials: {} };
+    let canDelete = false;
+
+    if (session_number) {
+      const sessionMaterials = materials.session_materials[session_number] || [];
+      const material = sessionMaterials.find(mat => mat.id === materialId);
+      canDelete = material && material.added_by === tutorId;
+    } else {
+      const material = materials.course_materials.find(mat => mat.id === materialId);
+      canDelete = material && material.added_by === tutorId;
+    }
+
+    if (!canDelete) {
+      return res.status(403).json({ error: 'You can only delete materials you added' });
+    }
+
+    const updatedBatch = await batch.addSessionMaterial(session.session_number, materialData, tutorId);
+
+    res.json({
+      message: 'Material added to session successfully',
+      session: session.toJSON(),
+      batch: updatedBatch.toJSON(),
+      materials: updatedBatch.materials
+    });
+
+  } catch (error) {
+    console.error('Add session material error:', error);
+    res.status(500).json({ error: 'Failed to add material to session' });
+  }
+});
+
+// Get materials overview for tutor's batches
+router.get('/materials/overview', async (req, res) => {
+  try {
+    const tutorId = req.user.id;
+
+    const batches = await Batch.findAll({
+      where: {
+        current_tutor_id: tutorId,
+        status: ['Active', 'Paused']
+      },
+      include: [{ model: Course, as: 'course' }]
+    });
+
+    const overview = batches.map(batch => {
+      const materials = batch.materials || { course_materials: [], session_materials: {} };
+      
+      const courseMaterialsCount = materials.course_materials.length;
+      const sessionMaterialsCount = Object.values(materials.session_materials)
+        .reduce((sum, sessionMats) => sum + sessionMats.length, 0);
+
+      // Count materials added by this tutor
+      const tutorCourseMaterials = materials.course_materials.filter(mat => mat.added_by === tutorId).length;
+      const tutorSessionMaterials = Object.values(materials.session_materials)
+        .reduce((sum, sessionMats) => 
+          sum + sessionMats.filter(mat => mat.added_by === tutorId).length, 0);
+
+      return {
+        batch_id: batch.id,
+        batch_name: batch.batch_name,
+        course_name: batch.course.name,
+        total_course_materials: courseMaterialsCount,
+        total_session_materials: sessionMaterialsCount,
+        my_course_materials: tutorCourseMaterials,
+        my_session_materials: tutorSessionMaterials,
+        total_materials: courseMaterialsCount + sessionMaterialsCount,
+        my_materials: tutorCourseMaterials + tutorSessionMaterials
+      };
+    });
+
+    res.json(overview);
+
+  } catch (error) {
+    console.error('Materials overview error:', error);
+    res.status(500).json({ error: 'Failed to fetch materials overview' });
+  }
+});atch = await batch.removeMaterial(materialId, session_number);
+
+    res.json({
+      message: 'Material removed successfully',
+      batch: updatedBatch.toJSON(),
+      materials: updatedBatch.materials
+    });
+
+  } catch (error) {
+    console.error('Remove material error:', error);
+    res.status(500).json({ error: 'Failed to remove material' });
+  }
+});
+
+// Add material to specific session (during or after session)
+router.post('/sessions/:sessionId/materials', [
+  body('name').notEmpty().trim(),
+  body('type').isIn(['document', 'video', 'audio', 'link', 'image']),
+  body('url').isURL(),
+  body('description').optional(),
+  body('is_required').optional().isBoolean()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const tutorId = req.user.id;
+    const sessionId = req.params.sessionId;
+    const { name, type, url, description, is_required } = req.body;
+
+    // Get session and verify tutor access
+    const session = await Session.findOne({
+      where: {
+        id: sessionId,
+        assigned_tutor_id: tutorId
+      },
+      include: [{ model: Batch, as: 'batch' }]
+    });
+
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found or access denied' });
+    }
+
+    const batch = session.batch;
+    const materialData = {
+      name,
+      type,
+      url,
+      description: description || '',
+      is_required: is_required || false
+    };
+
+    const updatedB
 
 module.exports = router;
