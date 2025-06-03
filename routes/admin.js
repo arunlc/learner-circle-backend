@@ -208,30 +208,63 @@ router.post('/batches', [
       total_sessions: sessionCount
     });
 
-    // SIMPLIFIED SESSION CREATION
+    // FIXED SESSION CREATION - Handle multiple days per week
     const sessions = [];
     const startDate = new Date(start_date);
     
-    for (let i = 1; i <= sessionCount; i++) {
-      // Simple weekly increment for now
-      const sessionDate = new Date(startDate);
-      sessionDate.setDate(sessionDate.getDate() + (i - 1) * 7);
-      
-      // Set time from schedule (use first schedule item)
-      if (schedule.length > 0) {
-        const [hours, minutes] = schedule[0].time.split(':');
-        sessionDate.setHours(parseInt(hours), parseInt(minutes), 0, 0);
-      }
+    // Map day names to numbers (Sunday = 0)
+    const dayMap = {
+      'Sunday': 0, 'Monday': 1, 'Tuesday': 2, 'Wednesday': 3,
+      'Thursday': 4, 'Friday': 5, 'Saturday': 6
+    };
 
-      sessions.push({
-        batch_id: batch.id,
-        session_number: i,
-        curriculum_topic: `Session ${i}`,
-        scheduled_datetime: sessionDate,
-        assigned_tutor_id: current_tutor_id,
-        status: 'Scheduled'
-      });
+    let sessionNumber = 1;
+    let currentWeek = 0;
+    const maxWeeks = Math.ceil(sessionCount / schedule.length);
+
+    console.log(`Creating ${sessionCount} sessions across ${schedule.length} days per week for ${maxWeeks} weeks`);
+
+    while (sessionNumber <= sessionCount && currentWeek < maxWeeks) {
+      // For each week, create sessions for each scheduled day
+      for (const scheduleItem of schedule) {
+        if (sessionNumber > sessionCount) break;
+
+        const dayNumber = dayMap[scheduleItem.day];
+        const [hours, minutes] = scheduleItem.time.split(':');
+
+        // Calculate the date for this session
+        const sessionDate = new Date(startDate);
+        
+        // Move to the start of the current week
+        const startOfWeek = new Date(startDate);
+        startOfWeek.setDate(startDate.getDate() + (currentWeek * 7));
+        
+        // Find the next occurrence of the target day
+        const daysToAdd = (dayNumber - startOfWeek.getDay() + 7) % 7;
+        sessionDate.setDate(startOfWeek.getDate() + daysToAdd);
+        
+        // Set the time
+        sessionDate.setHours(parseInt(hours), parseInt(minutes), 0, 0);
+
+        // Only create session if it's on or after the start date
+        if (sessionDate >= startDate) {
+          sessions.push({
+            batch_id: batch.id,
+            session_number: sessionNumber,
+            curriculum_topic: `Session ${sessionNumber}`,
+            scheduled_datetime: sessionDate,
+            assigned_tutor_id: current_tutor_id,
+            status: 'Scheduled'
+          });
+
+          console.log(`Session ${sessionNumber}: ${scheduleItem.day} ${sessionDate.toISOString()}`);
+          sessionNumber++;
+        }
+      }
+      currentWeek++;
     }
+
+    console.log(`Created ${sessions.length} sessions`);
 
     // Bulk create sessions
     await Session.bulkCreate(sessions);
@@ -241,7 +274,7 @@ router.post('/batches', [
       include: [
         { model: Course, as: 'course' },
         { model: User, as: 'currentTutor' },
-        { model: Session, as: 'sessions' }
+        { model: Session, as: 'sessions', order: [['session_number', 'ASC']] }
       ]
     });
 
