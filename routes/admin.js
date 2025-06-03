@@ -46,7 +46,7 @@ router.get('/dashboard', async (req, res) => {
 router.post('/courses', [
   body('name').notEmpty().trim(),
   body('skill_level').isIn(['Beginner', 'Intermediate', 'Advanced']),
-  body('suggested_sessions').isInt({ min: 1 }),  // FIXED: Use suggested_sessions
+  body('total_sessions').isInt({ min: 1 }),  // BACK TO total_sessions
   body('curriculum').optional().isArray()
 ], async (req, res) => {
   try {
@@ -84,7 +84,7 @@ router.get('/courses', async (req, res) => {
 router.put('/courses/:id', [
   body('name').optional().notEmpty().trim(),
   body('skill_level').optional().isIn(['Beginner', 'Intermediate', 'Advanced']),
-  body('suggested_sessions').optional().isInt({ min: 1 }),
+  body('total_sessions').optional().isInt({ min: 1 }),  // BACK TO total_sessions
   body('session_duration_minutes').optional().isInt({ min: 15 }),
   body('description').optional(),
   body('curriculum').optional().isArray(),
