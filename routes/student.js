@@ -370,5 +370,231 @@ router.put('/profile', async (req, res) => {
     res.status(500).json({ error: 'Failed to update profile' });
   }
 });
+router.get('/materials', async (req, res) => {
+  try {
+    const studentId = req.user.id;
+
+    // Get student's active enrollments with batch and course info
+    const enrollments = await Enrollment.findAll({
+      where: {
+        student_id: studentId,
+        status: 'Active'
+      },
+      include: [
+        {
+          model: Batch,
+          as: 'batch',
+          include: [
+            { model: Course, as: 'course' },
+            { model: User, as: 'currentTutor' },
+            {
+              model: Session,
+              as: 'sessions',
+              attributes: ['id', 'session_number', 'curriculum_topic', 'scheduled_datetime', 'status'],
+              order: [['session_number', 'ASC']]
+            }
+          ]
+        }
+      ]
+    });
+
+    if (enrollments.length === 0) {
+      return res.json({
+        message: 'No active enrollments found',
+        batches: []
+      });
+    }
+
+    const batchMaterials = enrollments.map(enrollment => {
+      const batch = enrollment.batch;
+      const materials = batch.getStudentMaterials();
+      
+      // Organize session materials with session info
+      const sessionMaterialsWithInfo = {};
+      if (batch.sessions) {
+        batch.sessions.forEach(session => {
+          const sessionNum = session.session_number.toString();
+          if (materials.session_materials[sessionNum]) {
+            sessionMaterialsWithInfo[sessionNum] = {
+              session_info: {
+                id: session.id,
+                session_number: session.session_number,
+                topic: session.curriculum_topic || `Session ${session.session_number}`,
+                scheduled_datetime: session.scheduled_datetime,
+                status: session.status
+              },
+              materials: materials.session_materials[sessionNum]
+            };
+          }
+        });
+      }
+
+      return {
+        batch_id: batch.id,
+        batch_name: batch.batch_name,
+        course: {
+          id: batch.course.id,
+          name: batch.course.name,
+          skill_level: batch.course.skill_level
+        },
+        tutor: batch.currentTutor ? {
+          name: `${batch.currentTutor.first_name} ${batch.currentTutor.last_name[0]}.`
+        } : null,
+        enrollment_date: enrollment.enrollment_date,
+        materials: {
+          course_materials: materials.course_materials,
+          session_materials: sessionMaterialsWithInfo
+        }
+      };
+    });
+
+    res.json({
+      student_name: `${req.user.first_name} ${req.user.last_name}`,
+      batches: batchMaterials
+    });
+
+  } catch (error) {
+    console.error('Student materials error:', error);
+    res.status(500).json({ error: 'Failed to fetch study materials' });
+  }
+});
+
+// Get materials for specific batch (if student is enrolled)
+router.get('/materials/:batchId', async (req, res) => {
+  try {
+    const studentId = req.user.id;
+    const batchId = req.params.batchId;
+
+    // Verify student is enrolled in this batch
+    const enrollment = await Enrollment.findOne({
+      where: {
+        student_id: studentId,
+        batch_id: batchId,
+        status: 'Active'
+      },
+      include: [
+        {
+          model: Batch,
+          as: 'batch',
+          include: [
+            { model: Course, as: 'course' },
+            { model: User, as: 'currentTutor' },
+            {
+              model: Session,
+              as: 'sessions',
+              attributes: ['id', 'session_number', 'curriculum_topic', 'scheduled_datetime', 'status'],
+              order: [['session_number', 'ASC']]
+            }
+          ]
+        }
+      ]
+    });
+
+    if (!enrollment) {
+      return res.status(404).json({ error: 'Batch not found or access denied' });
+    }
+
+    const batch = enrollment.batch;
+    const materials = batch.getStudentMaterials();
+
+    // Add session info to session materials
+    const sessionMaterialsWithInfo = {};
+    if (batch.sessions) {
+      batch.sessions.forEach(session => {
+        const sessionNum = session.session_number.toString();
+        sessionMaterialsWithInfo[sessionNum] = {
+          session_info: {
+            id: session.id,
+            session_number: session.session_number,
+            topic: session.curriculum_topic || `Session ${session.session_number}`,
+            scheduled_datetime: session.scheduled_datetime,
+            status: session.status
+          },
+          materials: materials.session_materials[sessionNum] || []
+        };
+      });
+    }
+
+    res.json({
+      batch: {
+        id: batch.id,
+        batch_name: batch.batch_name,
+        course: {
+          id: batch.course.id,
+          name: batch.course.name,
+          description: batch.course.description,
+          skill_level: batch.course.skill_level
+        },
+        tutor: batch.currentTutor ? {
+          name: `${batch.currentTutor.first_name} ${batch.currentTutor.last_name[0]}.`
+        } : null,
+        enrollment_date: enrollment.enrollment_date
+      },
+      materials: {
+        course_materials: materials.course_materials,
+        session_materials: sessionMaterialsWithInfo
+      }
+    });
+
+  } catch (error) {
+    console.error('Batch materials error:', error);
+    res.status(500).json({ error: 'Failed to fetch batch materials' });
+  }
+});
+
+// Track material access (optional - for analytics)
+router.post('/materials/:materialId/access', async (req, res) => {
+  try {
+    const studentId = req.user.id;
+    const materialId = req.params.materialId;
+    const { batch_id, session_number } = req.body;
+
+    // Verify student has access to this material
+    const enrollment = await Enrollment.findOne({
+      where: {
+        student_id: studentId,
+        batch_id: batch_id,
+        status: 'Active'
+      },
+      include: [{ model: Batch, as: 'batch' }]
+    });
+
+    if (!enrollment) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const batch = enrollment.batch;
+    const materials = batch.materials || { course_materials: [], session_materials: {} };
+
+    // Find the material
+    let materialFound = false;
+    
+    // Check course materials
+    const courseMaterial = materials.course_materials.find(mat => mat.id === materialId);
+    if (courseMaterial) materialFound = true;
+    
+    // Check session materials
+    if (!materialFound && session_number) {
+      const sessionMaterials = materials.session_materials[session_number] || [];
+      const sessionMaterial = sessionMaterials.find(mat => mat.id === materialId);
+      if (sessionMaterial) materialFound = true;
+    }
+
+    if (!materialFound) {
+      return res.status(404).json({ error: 'Material not found or access denied' });
+    }
+
+    // Log material access (you can implement analytics here)
+    // For now, just return success
+    res.json({
+      message: 'Material access logged',
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Material access error:', error);
+    res.status(500).json({ error: 'Failed to log material access' });
+  }
+});
 
 module.exports = router;
