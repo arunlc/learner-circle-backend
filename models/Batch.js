@@ -1,4 +1,4 @@
-// models/Batch.js - Enhanced with Materials Support
+// models/Batch.js - Complete Enhanced Version with Materials Support
 
 const { DataTypes } = require('sequelize');
 const { sequelize } = require('../config/database');
@@ -61,7 +61,7 @@ const Batch = sequelize.define('Batch', {
       completed_sessions: 0
     }
   },
-  // NEW: Materials Management
+  // Materials Management
   materials: {
     type: DataTypes.JSONB,
     defaultValue: {
