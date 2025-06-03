@@ -2,8 +2,8 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { User, Course, Batch, Session, Enrollment } = require('../models');
 const { authMiddleware, roleGuard } = require('../middleware/auth');
-const { GoogleMeetService } = require('../services/googleMeet');
-const { SchedulingService } = require('../services/scheduling');
+const GoogleMeetService = require('../services/googleMeet');
+const SchedulingService = require('../services/scheduling');
 
 const router = express.Router();
 
