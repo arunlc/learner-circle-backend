@@ -161,6 +161,55 @@ router.post('/batches', [
       status: 'Active'
     });
 
+    // Add this route after your existing batch routes in admin.js
+
+// Update batch
+router.put('/batches/:id', [
+  body('current_tutor_id').optional().isUUID(),
+  body('max_students').optional().isInt({ min: 1, max: 20 }),
+  body('total_sessions').optional().isInt({ min: 1, max: 50 }),
+  body('schedule').optional().isArray(),
+  body('status').optional().isIn(['Active', 'Completed', 'Paused', 'Cancelled']),
+  body('start_date').optional().isISO8601()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const batchId = req.params.id;
+    const updateData = req.body;
+
+    // Update batch
+    const [updatedRowsCount] = await Batch.update(updateData, {
+      where: { id: batchId }
+    });
+
+    if (updatedRowsCount === 0) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+
+    // Get updated batch with relationships
+    const updatedBatch = await Batch.findByPk(batchId, {
+      include: [
+        { model: Course, as: 'course' },
+        { model: User, as: 'currentTutor' },
+        { model: Enrollment, as: 'enrollments', include: [{ model: User, as: 'student' }] }
+      ]
+    });
+
+    res.json({ 
+      message: 'Batch updated successfully', 
+      batch: updatedBatch 
+    });
+
+  } catch (error) {
+    console.error('Update batch error:', error);
+    res.status(500).json({ error: 'Failed to update batch' });
+  }
+});
+
     // Generate sessions using scheduling service
     const schedulingService = new SchedulingService();
     const sessions = await schedulingService.generateBatchSessions({
