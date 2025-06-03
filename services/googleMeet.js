@@ -1,3 +1,4 @@
+// services/googleMeet.js
 const { google } = require('googleapis');
 
 class GoogleMeetService {
@@ -86,3 +87,5 @@ class GoogleMeetService {
     }
   }
 }
+
+module.exports = GoogleMeetService;
