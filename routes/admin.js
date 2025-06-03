@@ -163,6 +163,221 @@ router.put('/courses/:id', [
   }
 });
 
+router.get('/batches/:id/materials', async (req, res) => {
+  try {
+    const batchId = req.params.id;
+
+    const batch = await Batch.findByPk(batchId, {
+      include: [
+        { model: Course, as: 'course' },
+        { model: User, as: 'currentTutor' }
+      ]
+    });
+
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+
+    res.json({
+      batch: batch.toJSON(),
+      materials: batch.materials || { course_materials: [], session_materials: {} }
+    });
+
+  } catch (error) {
+    console.error('Get batch materials error:', error);
+    res.status(500).json({ error: 'Failed to fetch batch materials' });
+  }
+});
+
+// Add material to batch
+router.post('/batches/:id/materials', [
+  body('name').notEmpty().trim(),
+  body('type').isIn(['document', 'video', 'audio', 'link', 'image']),
+  body('url').isURL(),
+  body('description').optional(),
+  body('session_number').optional().isInt({ min: 1 }),
+  body('is_required').optional().isBoolean()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const batchId = req.params.id;
+    const { name, type, url, description, session_number, is_required } = req.body;
+
+    const batch = await Batch.findByPk(batchId);
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+
+    const materialData = {
+      name,
+      type,
+      url,
+      description: description || '',
+      is_required: is_required || false
+    };
+
+    let updatedBatch;
+    if (session_number) {
+      // Add to session materials
+      updatedBatch = await batch.addSessionMaterial(session_number, materialData, req.user.id);
+    } else {
+      // Add to course materials
+      updatedBatch = await batch.addCourseMaterial(materialData, req.user.id);
+    }
+
+    res.json({
+      message: 'Material added successfully',
+      batch: updatedBatch.toJSON(),
+      materials: updatedBatch.materials
+    });
+
+  } catch (error) {
+    console.error('Add material error:', error);
+    res.status(500).json({ error: 'Failed to add material' });
+  }
+});
+
+// Remove material from batch
+router.delete('/batches/:id/materials/:materialId', async (req, res) => {
+  try {
+    const { id: batchId, materialId } = req.params;
+    const { session_number } = req.query;
+
+    const batch = await Batch.findByPk(batchId);
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+
+    const updatedBatch = await batch.removeMaterial(materialId, session_number);
+
+    res.json({
+      message: 'Material removed successfully',
+      batch: updatedBatch.toJSON(),
+      materials: updatedBatch.materials
+    });
+
+  } catch (error) {
+    console.error('Remove material error:', error);
+    res.status(500).json({ error: 'Failed to remove material' });
+  }
+});
+
+// Bulk add materials to multiple batches
+router.post('/batches/bulk-materials', [
+  body('batch_ids').isArray({ min: 1 }),
+  body('material.name').notEmpty().trim(),
+  body('material.type').isIn(['document', 'video', 'audio', 'link', 'image']),
+  body('material.url').isURL(),
+  body('material.description').optional(),
+  body('material.session_number').optional().isInt({ min: 1 }),
+  body('material.is_required').optional().isBoolean()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { batch_ids, material } = req.body;
+
+    // Verify all batches exist
+    const batches = await Batch.findAll({
+      where: { id: { [require('sequelize').Op.in]: batch_ids } }
+    });
+
+    if (batches.length !== batch_ids.length) {
+      return res.status(404).json({ error: 'One or more batches not found' });
+    }
+
+    const materialData = {
+      name: material.name,
+      type: material.type,
+      url: material.url,
+      description: material.description || '',
+      is_required: material.is_required || false
+    };
+
+    const results = [];
+    for (const batch of batches) {
+      let updatedBatch;
+      if (material.session_number) {
+        updatedBatch = await batch.addSessionMaterial(material.session_number, materialData, req.user.id);
+      } else {
+        updatedBatch = await batch.addCourseMaterial(materialData, req.user.id);
+      }
+      results.push({
+        batch_id: batch.id,
+        batch_name: batch.batch_name,
+        success: true
+      });
+    }
+
+    res.json({
+      message: `Material added to ${results.length} batches successfully`,
+      results
+    });
+
+  } catch (error) {
+    console.error('Bulk add materials error:', error);
+    res.status(500).json({ error: 'Failed to add materials to batches' });
+  }
+});
+
+// Get materials overview for admin
+router.get('/materials/overview', async (req, res) => {
+  try {
+    const { course_id, material_type } = req.query;
+    
+    const whereClause = {};
+    if (course_id) whereClause.course_id = course_id;
+
+    const batches = await Batch.findAll({
+      where: whereClause,
+      include: [
+        { model: Course, as: 'course' },
+        { model: User, as: 'currentTutor' }
+      ]
+    });
+
+    const overview = batches.map(batch => {
+      const materials = batch.materials || { course_materials: [], session_materials: {} };
+      
+      let courseMaterialsCount = materials.course_materials.length;
+      let sessionMaterialsCount = Object.values(materials.session_materials)
+        .reduce((sum, sessionMats) => sum + sessionMats.length, 0);
+
+      // Filter by material type if specified
+      if (material_type) {
+        courseMaterialsCount = materials.course_materials.filter(mat => mat.type === material_type).length;
+        sessionMaterialsCount = Object.values(materials.session_materials)
+          .reduce((sum, sessionMats) => 
+            sum + sessionMats.filter(mat => mat.type === material_type).length, 0);
+      }
+
+      return {
+        batch_id: batch.id,
+        batch_name: batch.batch_name,
+        course_name: batch.course.name,
+        tutor_name: batch.currentTutor ? 
+          `${batch.currentTutor.first_name} ${batch.currentTutor.last_name}` : 'No Tutor',
+        course_materials_count: courseMaterialsCount,
+        session_materials_count: sessionMaterialsCount,
+        total_materials: courseMaterialsCount + sessionMaterialsCount,
+        status: batch.status
+      };
+    });
+
+    res.json(overview);
+
+  } catch (error) {
+    console.error('Materials overview error:', error);
+    res.status(500).json({ error: 'Failed to fetch materials overview' });
+  }
+});
 // Batch management
 router.post('/batches', [
   body('course_id').isUUID(),
