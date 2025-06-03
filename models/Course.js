@@ -1,4 +1,4 @@
-// models/Course.js - Updated with proper field mapping
+// models/Course.js - Backward Compatible Version
 
 const { DataTypes } = require('sequelize');
 const { sequelize } = require('../config/database');
@@ -21,8 +21,8 @@ const Course = sequelize.define('Course', {
     type: DataTypes.ENUM('Beginner', 'Intermediate', 'Advanced'),
     allowNull: false
   },
-  // FIXED: Use suggested_sessions to match frontend
-  suggested_sessions: {
+  // KEEP ORIGINAL FIELD NAME for now
+  total_sessions: {
     type: DataTypes.INTEGER,
     allowNull: false,
     validate: {
@@ -55,5 +55,15 @@ const Course = sequelize.define('Course', {
   createdAt: 'created_at',
   updatedAt: 'updated_at'
 });
+
+// Add virtual field for backward compatibility
+Course.prototype.toJSON = function() {
+  const values = Object.assign({}, this.get());
+  
+  // Add suggested_sessions as alias for total_sessions
+  values.suggested_sessions = values.total_sessions;
+  
+  return values;
+};
 
 module.exports = Course;
