@@ -420,9 +420,15 @@ router.get('/batches/:id/sessions', async (req, res) => {
 });
 
 // Sessions Dashboard
+// QUICK FIX: Update this section in your routes/admin.js file
+// Replace the Sessions Dashboard route (around line 400-450) with this:
+
+// Sessions Dashboard - FIXED VERSION
 router.get('/sessions/dashboard', async (req, res) => {
   try {
     const { filter, date, tutor_id, course_id, status } = req.query;
+    
+    console.log('Sessions dashboard query params:', req.query); // Debug log
     
     let dateFilter = {};
     const today = new Date();
@@ -487,7 +493,7 @@ router.get('/sessions/dashboard', async (req, res) => {
         break;
 
       default:
-        // No date filter - show upcoming sessions
+        // Show all upcoming sessions for default case
         dateFilter = {
           scheduled_datetime: {
             [require('sequelize').Op.gte]: today
@@ -495,23 +501,41 @@ router.get('/sessions/dashboard', async (req, res) => {
         };
     }
 
+    // Build WHERE clause - FIXED to handle empty values properly
     const where = { ...dateFilter };
-    if (tutor_id) where.assigned_tutor_id = tutor_id;
-    if (status) where.status = status;
+    
+    // Only add filters if they have actual values (not empty strings)
+    if (tutor_id && tutor_id.trim() !== '') {
+      where.assigned_tutor_id = tutor_id;
+    }
+    if (status && status.trim() !== '') {
+      where.status = status;
+    }
+
+    console.log('Final WHERE clause:', where); // Debug log
+
+    // Build include for course filter
+    const batchInclude = {
+      model: Batch,
+      as: 'batch',
+      include: [{ model: Course, as: 'course' }]
+    };
+
+    // Only add course filter if course_id is provided and not empty
+    if (course_id && course_id.trim() !== '') {
+      batchInclude.where = { course_id };
+    }
 
     const sessions = await Session.findAll({
       where,
       include: [
-        {
-          model: Batch,
-          as: 'batch',
-          include: [{ model: Course, as: 'course' }],
-          where: course_id ? { course_id } : {}
-        },
+        batchInclude,
         { model: User, as: 'assignedTutor', attributes: ['id', 'first_name', 'last_name'] }
       ],
       order: [['scheduled_datetime', 'ASC']]
     });
+
+    console.log(`Found ${sessions.length} sessions`); // Debug log
 
     // Add attendance stats and alerts
     const sessionsWithAlerts = sessions.map(session => {
