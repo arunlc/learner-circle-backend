@@ -237,4 +237,74 @@ router.get('/users', async (req, res) => {
   }
 });
 
+router.put('/users/:id', [
+  body('first_name').optional().notEmpty().trim(),
+  body('last_name').optional().notEmpty().trim(),
+  body('role').optional().isIn(['tutor', 'student', 'parent']),
+  body('phone').optional(),
+  body('timezone').optional(),
+  body('is_active').optional().isBoolean(),
+  body('password').optional().isLength({ min: 6 })
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const userId = req.params.id;
+    const updateData = req.body;
+
+    // Hash password if provided
+    if (updateData.password) {
+      updateData.password_hash = updateData.password;
+      delete updateData.password;
+    }
+
+    // Update user
+    const [updatedRowsCount] = await User.update(updateData, {
+      where: { id: userId }
+    });
+
+    if (updatedRowsCount === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Get updated user
+    const updatedUser = await User.findByPk(userId);
+    const userResponse = updatedUser.getSecureView('admin');
+
+    res.json({ 
+      message: 'User updated successfully', 
+      user: userResponse 
+    });
+
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({ error: 'Failed to update user' });
+  }
+});
+
+// Delete user (soft delete - set inactive)
+router.delete('/users/:id', async (req, res) => {
+  try {
+    const userId = req.params.id;
+
+    // Soft delete - set user as inactive
+    const [updatedRowsCount] = await User.update(
+      { is_active: false },
+      { where: { id: userId } }
+    );
+
+    if (updatedRowsCount === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({ message: 'User deactivated successfully' });
+
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({ error: 'Failed to delete user' });
+  }
+});
 module.exports = router;
