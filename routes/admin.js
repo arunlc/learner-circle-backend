@@ -295,21 +295,31 @@ router.delete('/batches/:id/materials/:materialId', async (req, res) => {
 
 // Bulk add materials to multiple batches
 router.post('/batches/bulk-materials', [
-  body('batch_ids').isArray({ min: 1 }),
-  body('material.name').notEmpty().trim(),
-  body('material.type').isIn(['document', 'video', 'audio', 'link', 'image']),
-  body('material.url').isURL(),
+  body('batch_ids').isArray({ min: 1 }).withMessage('At least one batch must be selected'),
+  body('material.name').notEmpty().trim().withMessage('Material name is required'),
+  body('material.type').isIn(['document', 'video', 'audio', 'link', 'image']).withMessage('Valid material type is required'),
+  body('material.url').isURL().withMessage('Valid URL is required'),
   body('material.description').optional(),
-  body('material.session_number').optional().isInt({ min: 1 }),
+  body('material.session_number').optional().custom((value) => {
+    if (value === '' || value === null || value === undefined) return true;
+    if (Number.isInteger(Number(value)) && Number(value) >= 1) return true;
+    throw new Error('Session number must be a positive integer');
+  }),
   body('material.is_required').optional().isBoolean()
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+      console.error('❌ Bulk validation errors:', errors.array());
+      return res.status(400).json({
+        error: 'Validation failed',
+        details: errors.array().map(err => `${err.param}: ${err.msg}`).join(', '),
+        validation_errors: errors.array()
+      });
     }
 
     const { batch_ids, material } = req.body;
+    console.log('🔍 Bulk operation:', { batch_ids, material });
 
     // Verify all batches exist
     const batches = await Batch.findAll({
@@ -321,36 +331,55 @@ router.post('/batches/bulk-materials', [
     }
 
     const materialData = {
-      name: material.name,
+      name: material.name.trim(),
       type: material.type,
       url: material.url,
-      description: material.description || '',
-      is_required: material.is_required || false
+      description: material.description?.trim() || '',
+      is_required: Boolean(material.is_required) // Ensure boolean
     };
+
+    console.log('🔍 Processed bulk material data:', materialData);
 
     const results = [];
     for (const batch of batches) {
-      let updatedBatch;
-      if (material.session_number) {
-        updatedBatch = await batch.addSessionMaterial(material.session_number, materialData, req.user.id);
-      } else {
-        updatedBatch = await batch.addCourseMaterial(materialData, req.user.id);
+      try {
+        let updatedBatch;
+        // FIXED: Handle empty string for session_number in bulk
+        if (material.session_number && material.session_number !== '' && material.session_number !== null) {
+          const sessionNum = parseInt(material.session_number);
+          updatedBatch = await batch.addSessionMaterial(sessionNum, materialData, req.user.id);
+        } else {
+          updatedBatch = await batch.addCourseMaterial(materialData, req.user.id);
+        }
+        results.push({
+          batch_id: batch.id,
+          batch_name: batch.batch_name,
+          success: true
+        });
+      } catch (error) {
+        console.error(`❌ Failed to add material to batch ${batch.id}:`, error);
+        results.push({
+          batch_id: batch.id,
+          batch_name: batch.batch_name,
+          success: false,
+          error: error.message
+        });
       }
-      results.push({
-        batch_id: batch.id,
-        batch_name: batch.batch_name,
-        success: true
-      });
     }
 
+    const successCount = results.filter(r => r.success).length;
+    
     res.json({
-      message: `Material added to ${results.length} batches successfully`,
+      message: `Material added to ${successCount}/${results.length} batches successfully`,
       results
     });
 
   } catch (error) {
-    console.error('Bulk add materials error:', error);
-    res.status(500).json({ error: 'Failed to add materials to batches' });
+    console.error('❌ Bulk add materials error:', error);
+    res.status(500).json({ 
+      error: 'Failed to add materials to batches',
+      details: error.message
+    });
   }
 });
 
