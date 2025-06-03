@@ -1,3 +1,5 @@
+// models/Course.js - Updated with proper field mapping
+
 const { DataTypes } = require('sequelize');
 const { sequelize } = require('../config/database');
 
@@ -19,13 +21,22 @@ const Course = sequelize.define('Course', {
     type: DataTypes.ENUM('Beginner', 'Intermediate', 'Advanced'),
     allowNull: false
   },
-  total_sessions: {
+  // FIXED: Use suggested_sessions to match frontend
+  suggested_sessions: {
     type: DataTypes.INTEGER,
-    allowNull: false
+    allowNull: false,
+    validate: {
+      min: 1,
+      max: 50
+    }
   },
   session_duration_minutes: {
     type: DataTypes.INTEGER,
-    defaultValue: 60
+    defaultValue: 60,
+    validate: {
+      min: 15,
+      max: 180
+    }
   },
   curriculum: {
     type: DataTypes.JSONB,
