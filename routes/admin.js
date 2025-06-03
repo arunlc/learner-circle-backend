@@ -81,7 +81,46 @@ router.get('/courses', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch courses' });
   }
 });
+router.put('/courses/:id', [
+  body('name').optional().notEmpty().trim(),
+  body('skill_level').optional().isIn(['Beginner', 'Intermediate', 'Advanced']),
+  body('suggested_sessions').optional().isInt({ min: 1 }),
+  body('session_duration_minutes').optional().isInt({ min: 15 }),
+  body('description').optional(),
+  body('curriculum').optional().isArray(),
+  body('is_active').optional().isBoolean()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
 
+    const courseId = req.params.id;
+    const updateData = req.body;
+
+    // Update course
+    const [updatedRowsCount] = await Course.update(updateData, {
+      where: { id: courseId }
+    });
+
+    if (updatedRowsCount === 0) {
+      return res.status(404).json({ error: 'Course not found' });
+    }
+
+    // Get updated course
+    const updatedCourse = await Course.findByPk(courseId);
+
+    res.json({ 
+      message: 'Course updated successfully', 
+      course: updatedCourse 
+    });
+
+  } catch (error) {
+    console.error('Update course error:', error);
+    res.status(500).json({ error: 'Failed to update course' });
+  }
+});
 // Batch management
 router.post('/batches', [
   body('course_id').isUUID(),
