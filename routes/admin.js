@@ -195,7 +195,12 @@ router.post('/batches/:id/materials', [
   body('type').isIn(['document', 'video', 'audio', 'link', 'image']).withMessage('Valid material type is required'),
   body('url').isURL().withMessage('Valid URL is required'),
   body('description').optional(),
-  body('session_number').optional().isInt({ min: 1 }).withMessage('Session number must be a positive integer'),
+  body('session_number').optional().custom((value) => {
+    // Allow empty string or valid integer
+    if (value === '' || value === null || value === undefined) return true;
+    if (Number.isInteger(Number(value)) && Number(value) >= 1) return true;
+    throw new Error('Session number must be a positive integer');
+  }),
   body('is_required').optional().isBoolean()
 ], async (req, res) => {
   try {
@@ -226,16 +231,18 @@ router.post('/batches/:id/materials', [
       type,
       url,
       description: description?.trim() || '',
-      is_required: is_required || false
+      is_required: Boolean(is_required) // Ensure boolean
     };
 
     console.log('🔍 Processed material data:', materialData);
 
     let updatedBatch;
-    if (session_number) {
+    // FIXED: Handle empty string for session_number
+    if (session_number && session_number !== '' && session_number !== null) {
       // Add to session materials
-      console.log(`📝 Adding to session ${session_number}`);
-      updatedBatch = await batch.addSessionMaterial(session_number, materialData, req.user.id);
+      const sessionNum = parseInt(session_number);
+      console.log(`📝 Adding to session ${sessionNum}`);
+      updatedBatch = await batch.addSessionMaterial(sessionNum, materialData, req.user.id);
     } else {
       // Add to course materials
       console.log('📚 Adding to course materials');
