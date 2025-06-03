@@ -1,13 +1,7 @@
-// routes/admin.js - CORRECTED IMPORTS
-
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { User, Course, Batch, Session, Enrollment } = require('../models');
 const { authMiddleware, roleGuard } = require('../middleware/auth');
-
-// FIXED IMPORTS - Use the correct file paths from your original code
-const GoogleMeetService = require('../services/googleMeet');  // SEPARATE FILE
-const SchedulingService = require('../services/scheduling');  // SEPARATE FILE
 
 const router = express.Router();
 
@@ -47,7 +41,70 @@ router.get('/dashboard', async (req, res) => {
   }
 });
 
-// Course management
+// Course management with status filtering
+router.get('/courses', async (req, res) => {
+  try {
+    const { status = 'active' } = req.query;
+    
+    let where = {};
+    switch (status) {
+      case 'active':
+        where.is_active = true;
+        break;
+      case 'inactive':
+        where.is_active = false;
+        break;
+      case 'all':
+      default:
+        // No filter
+        break;
+    }
+
+    const courses = await Course.findAll({
+      where,
+      include: [{
+        model: Batch,
+        as: 'batches',
+        required: false,
+        include: [{
+          model: Enrollment,
+          as: 'enrollments',
+          where: { status: 'Active' },
+          required: false
+        }]
+      }]
+    });
+
+    // Add course statistics
+    const coursesWithStats = courses.map(course => {
+      const courseData = course.toJSON();
+      
+      // Calculate metrics
+      const activeBatches = courseData.batches?.filter(batch => batch.status === 'Active') || [];
+      const totalEnrollments = courseData.batches?.reduce((sum, batch) => 
+        sum + (batch.enrollments?.length || 0), 0) || 0;
+      const currentActiveStudents = activeBatches.reduce((sum, batch) => 
+        sum + (batch.enrollments?.length || 0), 0);
+      const averageBatchSize = courseData.batches?.length > 0 ? 
+        Math.round(totalEnrollments / courseData.batches.length) : 0;
+
+      courseData.metrics = {
+        total_enrollments: totalEnrollments,
+        current_active_students: currentActiveStudents,
+        active_batches: activeBatches.length,
+        average_batch_size: averageBatchSize
+      };
+
+      return courseData;
+    });
+
+    res.json(coursesWithStats);
+  } catch (error) {
+    console.error('Fetch courses error:', error);
+    res.status(500).json({ error: 'Failed to fetch courses' });
+  }
+});
+
 router.post('/courses', [
   body('name').notEmpty().trim(),
   body('skill_level').isIn(['Beginner', 'Intermediate', 'Advanced']),
@@ -65,24 +122,6 @@ router.post('/courses', [
   } catch (error) {
     console.error('Create course error:', error);
     res.status(500).json({ error: 'Failed to create course' });
-  }
-});
-
-router.get('/courses', async (req, res) => {
-  try {
-    const courses = await Course.findAll({
-      where: { is_active: true },
-      include: [{
-        model: Batch,
-        as: 'batches',
-        where: { status: 'Active' },
-        required: false
-      }]
-    });
-    res.json(courses);
-  } catch (error) {
-    console.error('Fetch courses error:', error);
-    res.status(500).json({ error: 'Failed to fetch courses' });
   }
 });
 
@@ -124,42 +163,7 @@ router.put('/courses/:id', [
   }
 });
 
-// Delete course (soft delete)
-router.delete('/courses/:id', async (req, res) => {
-  try {
-    const courseId = req.params.id;
-
-    const activeBatches = await Batch.count({
-      where: { 
-        course_id: courseId,
-        status: ['Active', 'Paused']
-      }
-    });
-
-    if (activeBatches > 0) {
-      return res.status(400).json({ 
-        error: 'Cannot delete course with active batches. Please complete or cancel all batches first.' 
-      });
-    }
-
-    const [updatedRowsCount] = await Course.update(
-      { is_active: false },
-      { where: { id: courseId } }
-    );
-
-    if (updatedRowsCount === 0) {
-      return res.status(404).json({ error: 'Course not found' });
-    }
-
-    res.json({ message: 'Course deleted successfully' });
-
-  } catch (error) {
-    console.error('Delete course error:', error);
-    res.status(500).json({ error: 'Failed to delete course' });
-  }
-});
-
-// Batch management - SIMPLIFIED WITHOUT GOOGLE SERVICES FOR NOW
+// Batch management
 router.post('/batches', [
   body('course_id').isUUID(),
   body('start_date').isISO8601(),
@@ -204,7 +208,7 @@ router.post('/batches', [
       total_sessions: sessionCount
     });
 
-    // SIMPLIFIED SESSION CREATION - NO GOOGLE MEET FOR NOW
+    // SIMPLIFIED SESSION CREATION
     const sessions = [];
     const startDate = new Date(start_date);
     
@@ -315,6 +319,285 @@ router.put('/batches/:id', [
   } catch (error) {
     console.error('Update batch error:', error);
     res.status(500).json({ error: 'Failed to update batch' });
+  }
+});
+
+// NEW: Get sessions for specific batch
+router.get('/batches/:id/sessions', async (req, res) => {
+  try {
+    const batchId = req.params.id;
+
+    const batch = await Batch.findByPk(batchId, {
+      include: [
+        { model: Course, as: 'course' },
+        { model: User, as: 'currentTutor' }
+      ]
+    });
+
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+
+    const sessions = await Session.findAll({
+      where: { batch_id: batchId },
+      include: [
+        { model: User, as: 'assignedTutor', attributes: ['id', 'first_name', 'last_name'] }
+      ],
+      order: [['session_number', 'ASC']]
+    });
+
+    // Calculate attendance rates
+    const sessionsWithStats = sessions.map(session => {
+      const sessionData = session.toJSON();
+      
+      if (sessionData.attendance) {
+        const attendanceEntries = Object.values(sessionData.attendance);
+        const totalStudents = attendanceEntries.length;
+        const presentCount = attendanceEntries.filter(status => status === 'present').length;
+        const attendanceRate = totalStudents > 0 ? Math.round((presentCount / totalStudents) * 100) : 0;
+        
+        sessionData.attendance_stats = {
+          present: presentCount,
+          total: totalStudents,
+          rate: attendanceRate
+        };
+      } else {
+        sessionData.attendance_stats = { present: 0, total: 0, rate: 0 };
+      }
+
+      return sessionData;
+    });
+
+    res.json({
+      batch,
+      sessions: sessionsWithStats
+    });
+
+  } catch (error) {
+    console.error('Get batch sessions error:', error);
+    res.status(500).json({ error: 'Failed to fetch batch sessions' });
+  }
+});
+
+// NEW: Sessions Dashboard
+router.get('/sessions/dashboard', async (req, res) => {
+  try {
+    const { filter, date, tutor_id, course_id, status } = req.query;
+    
+    let dateFilter = {};
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    switch (filter) {
+      case 'today':
+        const todayEnd = new Date(today);
+        todayEnd.setHours(23, 59, 59, 999);
+        dateFilter = {
+          scheduled_datetime: {
+            [require('sequelize').Op.between]: [today, todayEnd]
+          }
+        };
+        break;
+
+      case 'yesterday':
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayEnd = new Date(yesterday);
+        yesterdayEnd.setHours(23, 59, 59, 999);
+        dateFilter = {
+          scheduled_datetime: {
+            [require('sequelize').Op.between]: [yesterday, yesterdayEnd]
+          }
+        };
+        break;
+
+      case 'tomorrow':
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const tomorrowEnd = new Date(tomorrow);
+        tomorrowEnd.setHours(23, 59, 59, 999);
+        dateFilter = {
+          scheduled_datetime: {
+            [require('sequelize').Op.between]: [tomorrow, tomorrowEnd]
+          }
+        };
+        break;
+
+      case 'week':
+        const weekEnd = new Date(today);
+        weekEnd.setDate(weekEnd.getDate() + 7);
+        dateFilter = {
+          scheduled_datetime: {
+            [require('sequelize').Op.between]: [today, weekEnd]
+          }
+        };
+        break;
+
+      case 'custom':
+        if (date) {
+          const customDate = new Date(date);
+          const customEnd = new Date(customDate);
+          customEnd.setHours(23, 59, 59, 999);
+          dateFilter = {
+            scheduled_datetime: {
+              [require('sequelize').Op.between]: [customDate, customEnd]
+            }
+          };
+        }
+        break;
+
+      default:
+        // No date filter - show upcoming sessions
+        dateFilter = {
+          scheduled_datetime: {
+            [require('sequelize').Op.gte]: today
+          }
+        };
+    }
+
+    const where = { ...dateFilter };
+    if (tutor_id) where.assigned_tutor_id = tutor_id;
+    if (status) where.status = status;
+
+    const sessions = await Session.findAll({
+      where,
+      include: [
+        {
+          model: Batch,
+          as: 'batch',
+          include: [{ model: Course, as: 'course' }],
+          where: course_id ? { course_id } : {}
+        },
+        { model: User, as: 'assignedTutor', attributes: ['id', 'first_name', 'last_name'] }
+      ],
+      order: [['scheduled_datetime', 'ASC']]
+    });
+
+    // Add attendance stats and alerts
+    const sessionsWithAlerts = sessions.map(session => {
+      const sessionData = session.toJSON();
+      
+      // Calculate attendance stats
+      if (sessionData.attendance) {
+        const attendanceEntries = Object.values(sessionData.attendance);
+        const totalStudents = attendanceEntries.length;
+        const presentCount = attendanceEntries.filter(status => status === 'present').length;
+        const attendanceRate = totalStudents > 0 ? Math.round((presentCount / totalStudents) * 100) : 0;
+        
+        sessionData.attendance_stats = {
+          present: presentCount,
+          total: totalStudents,
+          rate: attendanceRate
+        };
+
+        // Generate alerts
+        sessionData.alerts = [];
+        if (sessionData.status === 'Completed' && attendanceRate < 60) {
+          sessionData.alerts.push({
+            type: 'low_attendance',
+            message: `Low attendance: ${attendanceRate}%`,
+            severity: 'warning'
+          });
+        }
+      } else {
+        sessionData.attendance_stats = { present: 0, total: 0, rate: 0 };
+        sessionData.alerts = [];
+      }
+
+      // Check for missing tutor
+      if (!sessionData.assigned_tutor_id && sessionData.status === 'Scheduled') {
+        sessionData.alerts.push({
+          type: 'missing_tutor',
+          message: 'No tutor assigned',
+          severity: 'error'
+        });
+      }
+
+      return sessionData;
+    });
+
+    res.json(sessionsWithAlerts);
+
+  } catch (error) {
+    console.error('Sessions dashboard error:', error);
+    res.status(500).json({ error: 'Failed to fetch sessions dashboard' });
+  }
+});
+
+// NEW: Get alerts
+router.get('/alerts', async (req, res) => {
+  try {
+    const alerts = [];
+    const today = new Date();
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    // 1. Missing tutors for upcoming sessions
+    const sessionsWithoutTutor = await Session.findAll({
+      where: {
+        assigned_tutor_id: null,
+        scheduled_datetime: {
+          [require('sequelize').Op.between]: [today, tomorrow]
+        },
+        status: 'Scheduled'
+      },
+      include: [{ model: Batch, as: 'batch', include: [{ model: Course, as: 'course' }] }]
+    });
+
+    sessionsWithoutTutor.forEach(session => {
+      alerts.push({
+        type: 'missing_tutor',
+        severity: 'error',
+        message: `Session ${session.session_number} of ${session.batch.batch_name} has no assigned tutor`,
+        session_id: session.id,
+        created_at: new Date()
+      });
+    });
+
+    // 2. Low attendance in recent sessions
+    const recentCompletedSessions = await Session.findAll({
+      where: {
+        status: 'Completed',
+        scheduled_datetime: {
+          [require('sequelize').Op.gte]: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) // Last 7 days
+        }
+      },
+      include: [{ model: Batch, as: 'batch', include: [{ model: Course, as: 'course' }] }]
+    });
+
+    recentCompletedSessions.forEach(session => {
+      if (session.attendance) {
+        const attendanceEntries = Object.values(session.attendance);
+        const totalStudents = attendanceEntries.length;
+        const presentCount = attendanceEntries.filter(status => status === 'present').length;
+        const attendanceRate = totalStudents > 0 ? Math.round((presentCount / totalStudents) * 100) : 0;
+
+        if (attendanceRate < 60) {
+          alerts.push({
+            type: 'low_attendance',
+            severity: 'warning',
+            message: `Low attendance (${attendanceRate}%) in ${session.batch.batch_name} - Session ${session.session_number}`,
+            session_id: session.id,
+            created_at: new Date()
+          });
+        }
+      }
+    });
+
+    // Sort alerts by severity and date
+    alerts.sort((a, b) => {
+      const severityOrder = { error: 3, warning: 2, info: 1 };
+      if (severityOrder[a.severity] !== severityOrder[b.severity]) {
+        return severityOrder[b.severity] - severityOrder[a.severity];
+      }
+      return new Date(b.created_at) - new Date(a.created_at);
+    });
+
+    res.json(alerts);
+
+  } catch (error) {
+    console.error('Get alerts error:', error);
+    res.status(500).json({ error: 'Failed to fetch alerts' });
   }
 });
 
