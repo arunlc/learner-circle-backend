@@ -1420,5 +1420,655 @@ router.delete('/users/:id', async (req, res) => {
     res.status(500).json({ error: 'Failed to delete user' });
   }
 });
+// ===== ADD THESE ENDPOINTS TO YOUR BACKEND admin.js ROUTES FILE =====
 
+// BATCH MEET LINK MANAGEMENT
+router.put('/batches/:id/gmeet-link', [
+  body('gmeet_link').optional().custom((value) => {
+    if (value && !value.includes('meet.google.com')) {
+      throw new Error('Must be a valid Google Meet URL');
+    }
+    return true;
+  })
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const batchId = req.params.id;
+    const { gmeet_link } = req.body;
+
+    const [updatedRowsCount] = await Batch.update(
+      { gmeet_link },
+      { where: { id: batchId } }
+    );
+
+    if (updatedRowsCount === 0) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+
+    const updatedBatch = await Batch.findByPk(batchId, {
+      include: [
+        { model: Course, as: 'course' },
+        { model: User, as: 'currentTutor' }
+      ]
+    });
+
+    res.json({
+      message: 'Google Meet link updated successfully',
+      batch: updatedBatch
+    });
+
+  } catch (error) {
+    console.error('Update meet link error:', error);
+    res.status(500).json({ error: 'Failed to update meet link' });
+  }
+});
+
+// BATCH STATUS MANAGEMENT
+router.put('/batches/:id/status', [
+  body('status').isIn(['Active', 'Completed', 'Paused', 'Cancelled'])
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const batchId = req.params.id;
+    const { status, reason } = req.body;
+
+    const batch = await Batch.findByPk(batchId);
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+
+    // Update batch status
+    await batch.update({ status });
+
+    // If completing batch, mark future sessions as completed
+    if (status === 'Completed') {
+      await Session.update(
+        { status: 'Completed' },
+        {
+          where: {
+            batch_id: batchId,
+            status: 'Scheduled',
+            scheduled_datetime: { [require('sequelize').Op.gt]: new Date() }
+          }
+        }
+      );
+    }
+
+    const updatedBatch = await Batch.findByPk(batchId, {
+      include: [
+        { model: Course, as: 'course' },
+        { model: User, as: 'currentTutor' },
+        { model: Enrollment, as: 'enrollments', include: [{ model: User, as: 'student' }] }
+      ]
+    });
+
+    res.json({
+      message: `Batch status updated to ${status}`,
+      batch: updatedBatch
+    });
+
+  } catch (error) {
+    console.error('Update batch status error:', error);
+    res.status(500).json({ error: 'Failed to update batch status' });
+  }
+});
+
+// BATCH REACTIVATION
+router.put('/batches/:id/reactivate', [
+  body('resume_from_session').isInt({ min: 1 })
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const batchId = req.params.id;
+    const { resume_from_session } = req.body;
+
+    const batch = await Batch.findByPk(batchId, {
+      include: [{ model: Session, as: 'sessions' }]
+    });
+
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+
+    if (batch.status !== 'Completed') {
+      return res.status(400).json({ error: 'Only completed batches can be reactivated' });
+    }
+
+    // Update batch status to Active
+    await batch.update({ status: 'Active' });
+
+    // Mark sessions from resume_from_session onwards as Scheduled
+    await Session.update(
+      { status: 'Scheduled' },
+      {
+        where: {
+          batch_id: batchId,
+          session_number: { [require('sequelize').Op.gte]: resume_from_session }
+        }
+      }
+    );
+
+    const updatedBatch = await Batch.findByPk(batchId, {
+      include: [
+        { model: Course, as: 'course' },
+        { model: User, as: 'currentTutor' },
+        { model: Session, as: 'sessions', order: [['session_number', 'ASC']] }
+      ]
+    });
+
+    res.json({
+      message: `Batch reactivated from session ${resume_from_session}`,
+      batch: updatedBatch,
+      reactivated_sessions: updatedBatch.sessions.filter(s => s.session_number >= resume_from_session).length
+    });
+
+  } catch (error) {
+    console.error('Batch reactivation error:', error);
+    res.status(500).json({ error: 'Failed to reactivate batch' });
+  }
+});
+
+// ENHANCED BATCH SEARCH
+router.get('/batches/search', async (req, res) => {
+  try {
+    const { 
+      q,           // general search term
+      course_id,   // course filter
+      tutor_id,    // tutor filter
+      status,      // status filter
+      date_from,   // start date filter
+      date_to,     // end date filter
+      students_min, // minimum students
+      students_max, // maximum students
+      sort_by,     // sort field
+      sort_order   // asc/desc
+    } = req.query;
+
+    let where = {};
+    let include = [
+      { model: Course, as: 'course' },
+      { model: User, as: 'currentTutor' },
+      { 
+        model: Enrollment, 
+        as: 'enrollments',
+        include: [{ model: User, as: 'student' }]
+      }
+    ];
+
+    // Apply filters
+    if (course_id) where.course_id = course_id;
+    if (tutor_id) where.current_tutor_id = tutor_id;
+    if (status) where.status = status;
+    if (date_from) where.start_date = { [require('sequelize').Op.gte]: date_from };
+    if (date_to) {
+      where.start_date = {
+        ...where.start_date,
+        [require('sequelize').Op.lte]: date_to
+      };
+    }
+
+    // General search across batch name, course name, tutor name
+    if (q) {
+      where[require('sequelize').Op.or] = [
+        { batch_name: { [require('sequelize').Op.iLike]: `%${q}%` } }
+      ];
+    }
+
+    let order = [['created_at', 'DESC']];
+    if (sort_by) {
+      const sortOrder = sort_order === 'asc' ? 'ASC' : 'DESC';
+      switch (sort_by) {
+        case 'batch_name':
+          order = [['batch_name', sortOrder]];
+          break;
+        case 'start_date':
+          order = [['start_date', sortOrder]];
+          break;
+        case 'course_name':
+          order = [[{ model: Course, as: 'course' }, 'name', sortOrder]];
+          break;
+        default:
+          order = [['created_at', sortOrder]];
+      }
+    }
+
+    let batches = await Batch.findAll({
+      where,
+      include,
+      order
+    });
+
+    // Post-process filters that require JS logic
+    if (students_min || students_max) {
+      batches = batches.filter(batch => {
+        const studentCount = batch.enrollments?.length || 0;
+        if (students_min && studentCount < parseInt(students_min)) return false;
+        if (students_max && studentCount > parseInt(students_max)) return false;
+        return true;
+      });
+    }
+
+    // Filter by general search term in related models
+    if (q) {
+      const searchTerm = q.toLowerCase();
+      batches = batches.filter(batch => {
+        return (
+          batch.batch_name.toLowerCase().includes(searchTerm) ||
+          batch.course?.name.toLowerCase().includes(searchTerm) ||
+          `${batch.currentTutor?.first_name} ${batch.currentTutor?.last_name}`.toLowerCase().includes(searchTerm)
+        );
+      });
+    }
+
+    res.json(batches);
+
+  } catch (error) {
+    console.error('Batch search error:', error);
+    res.status(500).json({ error: 'Failed to search batches' });
+  }
+});
+
+// ENHANCED USER SEARCH
+router.get('/users/search', async (req, res) => {
+  try {
+    const { 
+      q,           // general search term
+      role,        // role filter
+      status,      // active/inactive
+      date_from,   // registration date from
+      date_to,     // registration date to
+      sort_by,     // sort field
+      sort_order   // asc/desc
+    } = req.query;
+
+    let where = {};
+
+    // Apply filters
+    if (role) where.role = role;
+    if (status === 'active') where.is_active = true;
+    if (status === 'inactive') where.is_active = false;
+    if (date_from) where.created_at = { [require('sequelize').Op.gte]: date_from };
+    if (date_to) {
+      where.created_at = {
+        ...where.created_at,
+        [require('sequelize').Op.lte]: date_to
+      };
+    }
+
+    // General search across name, email, phone
+    if (q) {
+      where[require('sequelize').Op.or] = [
+        { first_name: { [require('sequelize').Op.iLike]: `%${q}%` } },
+        { last_name: { [require('sequelize').Op.iLike]: `%${q}%` } },
+        { email: { [require('sequelize').Op.iLike]: `%${q}%` } },
+        { phone: { [require('sequelize').Op.iLike]: `%${q}%` } }
+      ];
+    }
+
+    let order = [['created_at', 'DESC']];
+    if (sort_by) {
+      const sortOrder = sort_order === 'asc' ? 'ASC' : 'DESC';
+      switch (sort_by) {
+        case 'name':
+          order = [['first_name', sortOrder], ['last_name', sortOrder]];
+          break;
+        case 'email':
+          order = [['email', sortOrder]];
+          break;
+        case 'role':
+          order = [['role', sortOrder]];
+          break;
+        default:
+          order = [['created_at', sortOrder]];
+      }
+    }
+
+    const users = await User.findAll({
+      where,
+      order
+    });
+
+    // Return role-appropriate user data
+    const usersResponse = users.map(user => user.getSecureView('admin'));
+    res.json(usersResponse);
+
+  } catch (error) {
+    console.error('User search error:', error);
+    res.status(500).json({ error: 'Failed to search users' });
+  }
+});
+
+// INDIVIDUAL SESSION EDITING
+router.put('/sessions/:id/details', [
+  body('scheduled_datetime').optional().isISO8601(),
+  body('curriculum_topic').optional(),
+  body('assigned_tutor_id').optional().isUUID(),
+  body('tutor_notes').optional()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const sessionId = req.params.id;
+    const updateData = req.body;
+
+    // Validate business hours if datetime is being updated
+    if (updateData.scheduled_datetime) {
+      const sessionDate = new Date(updateData.scheduled_datetime);
+      const hour = sessionDate.getHours();
+      
+      if (hour < 9 || hour > 21) {
+        return res.status(400).json({ 
+          error: 'Sessions must be scheduled between 9 AM and 9 PM' 
+        });
+      }
+
+      // Check for tutor conflicts if tutor is assigned
+      if (updateData.assigned_tutor_id) {
+        const conflict = await Session.findOne({
+          where: {
+            assigned_tutor_id: updateData.assigned_tutor_id,
+            scheduled_datetime: {
+              [require('sequelize').Op.between]: [
+                new Date(sessionDate.getTime() - 30 * 60 * 1000), // 30 min before
+                new Date(sessionDate.getTime() + 90 * 60 * 1000)  // 90 min after
+              ]
+            },
+            status: ['Scheduled', 'Completed'],
+            id: { [require('sequelize').Op.ne]: sessionId }
+          }
+        });
+
+        if (conflict) {
+          return res.status(409).json({ 
+            error: 'Tutor has a conflicting session at this time' 
+          });
+        }
+      }
+    }
+
+    const [updatedRowsCount] = await Session.update(updateData, {
+      where: { id: sessionId }
+    });
+
+    if (updatedRowsCount === 0) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const updatedSession = await Session.findByPk(sessionId, {
+      include: [
+        {
+          model: Batch,
+          as: 'batch',
+          include: [{ model: Course, as: 'course' }]
+        },
+        { model: User, as: 'assignedTutor' }
+      ]
+    });
+
+    res.json({
+      message: 'Session updated successfully',
+      session: updatedSession
+    });
+
+  } catch (error) {
+    console.error('Update session details error:', error);
+    res.status(500).json({ error: 'Failed to update session details' });
+  }
+});
+
+// BULK SESSION OPERATIONS
+router.post('/sessions/bulk-update', [
+  body('session_ids').isArray({ min: 1 }),
+  body('update_data').isObject()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { session_ids, update_data } = req.body;
+
+    // Validate that all sessions exist
+    const sessions = await Session.findAll({
+      where: { id: { [require('sequelize').Op.in]: session_ids } }
+    });
+
+    if (sessions.length !== session_ids.length) {
+      return res.status(404).json({ error: 'One or more sessions not found' });
+    }
+
+    // Perform bulk update
+    const [updatedRowsCount] = await Session.update(update_data, {
+      where: { id: { [require('sequelize').Op.in]: session_ids } }
+    });
+
+    res.json({
+      message: `${updatedRowsCount} sessions updated successfully`,
+      updated_count: updatedRowsCount
+    });
+
+  } catch (error) {
+    console.error('Bulk session update error:', error);
+    res.status(500).json({ error: 'Failed to update sessions' });
+  }
+});
+
+// BULK BATCH OPERATIONS
+router.post('/batches/bulk-update', [
+  body('batch_ids').isArray({ min: 1 }),
+  body('update_data').isObject()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { batch_ids, update_data } = req.body;
+
+    // Validate that all batches exist
+    const batches = await Batch.findAll({
+      where: { id: { [require('sequelize').Op.in]: batch_ids } }
+    });
+
+    if (batches.length !== batch_ids.length) {
+      return res.status(404).json({ error: 'One or more batches not found' });
+    }
+
+    // Perform bulk update
+    const [updatedRowsCount] = await Batch.update(update_data, {
+      where: { id: { [require('sequelize').Op.in]: batch_ids } }
+    });
+
+    res.json({
+      message: `${updatedRowsCount} batches updated successfully`,
+      updated_count: updatedRowsCount
+    });
+
+  } catch (error) {
+    console.error('Bulk batch update error:', error);
+    res.status(500).json({ error: 'Failed to update batches' });
+  }
+});
+
+// CALENDAR VIEW
+router.get('/calendar', async (req, res) => {
+  try {
+    const { start_date, end_date, tutor_id, course_id } = req.query;
+
+    if (!start_date || !end_date) {
+      return res.status(400).json({ error: 'Start date and end date are required' });
+    }
+
+    let where = {
+      scheduled_datetime: {
+        [require('sequelize').Op.between]: [start_date, end_date]
+      }
+    };
+
+    let include = [
+      {
+        model: Batch,
+        as: 'batch',
+        include: [{ model: Course, as: 'course' }]
+      },
+      { model: User, as: 'assignedTutor' }
+    ];
+
+    // Apply filters
+    if (tutor_id) where.assigned_tutor_id = tutor_id;
+    if (course_id) {
+      include[0].where = { course_id };
+    }
+
+    const sessions = await Session.findAll({
+      where,
+      include,
+      order: [['scheduled_datetime', 'ASC']]
+    });
+
+    // Format for calendar view
+    const calendarEvents = sessions.map(session => ({
+      id: session.id,
+      title: `${session.batch.batch_name} - Session ${session.session_number}`,
+      start: session.scheduled_datetime,
+      end: new Date(new Date(session.scheduled_datetime).getTime() + 60 * 60 * 1000), // +1 hour
+      status: session.status,
+      tutor: session.assignedTutor ? `${session.assignedTutor.first_name} ${session.assignedTutor.last_name}` : 'No Tutor',
+      course: session.batch.course.name,
+      batch_id: session.batch_id,
+      session_number: session.session_number
+    }));
+
+    res.json(calendarEvents);
+
+  } catch (error) {
+    console.error('Calendar view error:', error);
+    res.status(500).json({ error: 'Failed to fetch calendar data' });
+  }
+});
+
+// TUTOR CONFLICT CHECK
+router.get('/tutors/conflicts', async (req, res) => {
+  try {
+    const { tutor_id, datetime, exclude_session } = req.query;
+
+    if (!tutor_id || !datetime) {
+      return res.status(400).json({ error: 'Tutor ID and datetime are required' });
+    }
+
+    const checkDate = new Date(datetime);
+    let where = {
+      assigned_tutor_id: tutor_id,
+      scheduled_datetime: {
+        [require('sequelize').Op.between]: [
+          new Date(checkDate.getTime() - 30 * 60 * 1000), // 30 min before
+          new Date(checkDate.getTime() + 90 * 60 * 1000)  // 90 min after
+        ]
+      },
+      status: ['Scheduled', 'Completed']
+    };
+
+    if (exclude_session) {
+      where.id = { [require('sequelize').Op.ne]: exclude_session };
+    }
+
+    const conflicts = await Session.findAll({
+      where,
+      include: [
+        {
+          model: Batch,
+          as: 'batch',
+          include: [{ model: Course, as: 'course' }]
+        }
+      ]
+    });
+
+    res.json({
+      has_conflicts: conflicts.length > 0,
+      conflicts: conflicts.map(session => ({
+        session_id: session.id,
+        session_number: session.session_number,
+        batch_name: session.batch.batch_name,
+        course_name: session.batch.course.name,
+        scheduled_datetime: session.scheduled_datetime,
+        status: session.status
+      }))
+    });
+
+  } catch (error) {
+    console.error('Conflict check error:', error);
+    res.status(500).json({ error: 'Failed to check conflicts' });
+  }
+});
+
+// EXPORT BATCH DATA
+router.get('/batches/:id/export', async (req, res) => {
+  try {
+    const batchId = req.params.id;
+    const { format = 'csv' } = req.query;
+
+    const batch = await Batch.findByPk(batchId, {
+      include: [
+        { model: Course, as: 'course' },
+        { model: User, as: 'currentTutor' },
+        {
+          model: Enrollment,
+          as: 'enrollments',
+          include: [{ model: User, as: 'student' }]
+        },
+        {
+          model: Session,
+          as: 'sessions',
+          include: [{ model: User, as: 'assignedTutor' }],
+          order: [['session_number', 'ASC']]
+        }
+      ]
+    });
+
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+
+    if (format === 'json') {
+      res.json(batch);
+    } else {
+      // CSV format
+      let csvContent = 'Batch Name,Course,Tutor,Student Count,Session Count,Status,Start Date\n';
+      csvContent += `"${batch.batch_name}","${batch.course.name}","${batch.currentTutor ? batch.currentTutor.first_name + ' ' + batch.currentTutor.last_name : 'No Tutor'}",${batch.enrollments.length},${batch.sessions.length},"${batch.status}","${batch.start_date}"\n\n`;
+      
+      csvContent += 'Sessions:\n';
+      csvContent += 'Session Number,Topic,Date,Time,Tutor,Status\n';
+      
+      batch.sessions.forEach(session => {
+        const sessionDate = new Date(session.scheduled_datetime);
+        csvContent += `${session.session_number},"${session.curriculum_topic || 'No Topic'}","${sessionDate.toLocaleDateString()}","${sessionDate.toLocaleTimeString()}","${session.assignedTutor ? session.assignedTutor.first_name + ' ' + session.assignedTutor.last_name : 'No Tutor'}","${session.status}"\n`;
+      });
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="${batch.batch_name}_export.csv"`);
+      res.send(csvContent);
+    }
+
+  } catch (error) {
+    console.error('Export batch error:', error);
+    res.status(500).json({ error: 'Failed to export batch data' });
+  }
+});
 module.exports = router;
