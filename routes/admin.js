@@ -163,31 +163,7 @@ router.put('/courses/:id', [
   }
 });
 
-router.get('/batches/:id/materials', async (req, res) => {
-  try {
-    const batchId = req.params.id;
-
-    const batch = await Batch.findByPk(batchId, {
-      include: [
-        { model: Course, as: 'course' },
-        { model: User, as: 'currentTutor' }
-      ]
-    });
-
-    if (!batch) {
-      return res.status(404).json({ error: 'Batch not found' });
-    }
-
-    res.json({
-      batch: batch.toJSON(),
-      materials: batch.materials || { course_materials: [], session_materials: {} }
-    });
-
-  } catch (error) {
-    console.error('Get batch materials error:', error);
-    res.status(500).json({ error: 'Failed to fetch batch materials' });
-  }
-});
+router.get('/batches/:id/materials
 
 // Add material to batch
 router.post('/batches/:id/materials', [
@@ -196,7 +172,6 @@ router.post('/batches/:id/materials', [
   body('url').isURL().withMessage('Valid URL is required'),
   body('description').optional(),
   body('session_number').optional().custom((value) => {
-    // Allow empty string or valid integer
     if (value === '' || value === null || value === undefined) return true;
     if (Number.isInteger(Number(value)) && Number(value) >= 1) return true;
     throw new Error('Session number must be a positive integer');
@@ -231,30 +206,36 @@ router.post('/batches/:id/materials', [
       type,
       url,
       description: description?.trim() || '',
-      is_required: Boolean(is_required) // Ensure boolean
+      is_required: Boolean(is_required)
     };
 
     console.log('🔍 Processed material data:', materialData);
 
     let updatedBatch;
-    // FIXED: Handle empty string for session_number
     if (session_number && session_number !== '' && session_number !== null) {
-      // Add to session materials
       const sessionNum = parseInt(session_number);
       console.log(`📝 Adding to session ${sessionNum}`);
       updatedBatch = await batch.addSessionMaterial(sessionNum, materialData, req.user.id);
     } else {
-      // Add to course materials
       console.log('📚 Adding to course materials');
       updatedBatch = await batch.addCourseMaterial(materialData, req.user.id);
     }
 
-    console.log('✅ Material added successfully, updated materials:', updatedBatch.materials);
+    // CRITICAL: Reload the batch from database to get fresh data
+    const freshBatch = await Batch.findByPk(batchId, {
+      include: [
+        { model: Course, as: 'course' },
+        { model: User, as: 'currentTutor' }
+      ]
+    });
+
+    console.log('✅ Material added successfully, FRESH materials from DB:', freshBatch.materials);
+    console.log('✅ Course materials count after save:', freshBatch.materials?.course_materials?.length);
 
     res.json({
       message: 'Material added successfully',
-      batch: updatedBatch.toJSON(),
-      materials: updatedBatch.materials
+      batch: freshBatch.toJSON(),
+      materials: freshBatch.materials
     });
 
   } catch (error) {
