@@ -246,27 +246,33 @@ router.post('/batches/:id/materials', [
     if (session_number && session_number !== '' && session_number !== null) {
       const sessionNum = parseInt(session_number);
       console.log(`📝 Adding to session ${sessionNum}`);
+      // FIXED: Await the async method
       updatedBatch = await batch.addSessionMaterial(sessionNum, materialData, req.user.id);
     } else {
       console.log('📚 Adding to course materials');
+      // FIXED: Await the async method
       updatedBatch = await batch.addCourseMaterial(materialData, req.user.id);
     }
 
-    // CRITICAL: Reload the batch from database to get fresh data
-    const freshBatch = await Batch.findByPk(batchId, {
+    // IMPROVED: No need to reload - the batch instance should be updated
+    console.log('✅ Material added successfully, UPDATED materials:', updatedBatch.materials);
+    console.log('✅ Course materials count after save:', updatedBatch.materials?.course_materials?.length);
+
+    // FIXED: Include fresh data with all relations
+    const freshBatchWithRelations = await Batch.findByPk(batchId, {
       include: [
         { model: Course, as: 'course' },
         { model: User, as: 'currentTutor' }
       ]
     });
 
-    console.log('✅ Material added successfully, FRESH materials from DB:', freshBatch.materials);
-    console.log('✅ Course materials count after save:', freshBatch.materials?.course_materials?.length);
-
     res.json({
       message: 'Material added successfully',
-      batch: freshBatch.toJSON(),
-      materials: freshBatch.materials
+      batch: {
+        ...freshBatchWithRelations.toJSON(),
+        materials: updatedBatch.materials // Use the updated materials
+      },
+      materials: updatedBatch.materials
     });
 
   } catch (error) {
