@@ -163,8 +163,6 @@ router.put('/courses/:id', [
   }
 });
 
-// CLEANED ADMIN BACKEND - Replace the materials routes in your admin.js with these:
-
 // Get materials for specific batch
 router.get('/batches/:id/materials', async (req, res) => {
   try {
@@ -198,7 +196,7 @@ router.get('/batches/:id/materials', async (req, res) => {
   }
 });
 
-// Add material to batch - CLEANED VERSION
+// Add material to batch
 router.post('/batches/:id/materials', [
   body('name').notEmpty().trim().withMessage('Material name is required'),
   body('type').isIn(['document', 'video', 'audio', 'link', 'image']).withMessage('Valid material type is required'),
@@ -338,7 +336,7 @@ router.post('/batches/bulk-materials', [
       type: material.type,
       url: material.url,
       description: material.description?.trim() || '',
-      is_required: Boolean(material.is_required) // Ensure boolean
+      is_required: Boolean(material.is_required)
     };
 
     console.log('🔍 Processed bulk material data:', materialData);
@@ -347,7 +345,6 @@ router.post('/batches/bulk-materials', [
     for (const batch of batches) {
       try {
         let updatedBatch;
-        // FIXED: Handle empty string for session_number in bulk
         if (material.session_number && material.session_number !== '' && material.session_number !== null) {
           const sessionNum = parseInt(material.session_number);
           updatedBatch = await batch.addSessionMaterial(sessionNum, materialData, req.user.id);
@@ -734,10 +731,6 @@ router.get('/batches/:id/sessions', async (req, res) => {
   }
 });
 
-// Sessions Dashboard
-// QUICK FIX: Update this section in your routes/admin.js file
-// Replace the Sessions Dashboard route (around line 400-450) with this:
-
 // Sessions Dashboard - FIXED VERSION
 router.get('/sessions/dashboard', async (req, res) => {
   try {
@@ -903,8 +896,6 @@ router.get('/sessions/dashboard', async (req, res) => {
   }
 });
 
-// SESSION MANAGEMENT ROUTES (NEW)
-
 // Get specific session details
 router.get('/sessions/:id', async (req, res) => {
   try {
@@ -986,7 +977,7 @@ router.put('/sessions/:id', [
   }
 });
 
-// Reschedule session with cascade effect
+// NEW RESCHEDULE LOGIC - Mark original as rescheduled, add new session at end
 router.put('/sessions/:id/reschedule', [
   body('new_datetime').isISO8601(),
   body('reason').optional()
@@ -1000,57 +991,100 @@ router.put('/sessions/:id/reschedule', [
     const sessionId = req.params.id;
     const { new_datetime, reason } = req.body;
 
-    // Get the session to reschedule
-    const session = await Session.findByPk(sessionId, {
-      include: [{ model: Batch, as: 'batch' }]
+    // Get the session to reschedule with batch info
+    const originalSession = await Session.findByPk(sessionId, {
+      include: [{ 
+        model: Batch, 
+        as: 'batch',
+        include: [{ model: Course, as: 'course' }]
+      }]
     });
 
-    if (!session) {
+    if (!originalSession) {
       return res.status(404).json({ error: 'Session not found' });
     }
 
-    const originalDateTime = new Date(session.scheduled_datetime);
-    const newDateTime = new Date(new_datetime);
-    const timeDifference = newDateTime.getTime() - originalDateTime.getTime();
+    const batch = originalSession.batch;
 
-    // Update the current session
-    await session.update({
-      scheduled_datetime: new_datetime,
+    // Step 1: Mark the original session as "Rescheduled" with reason
+    await originalSession.update({
       status: 'Rescheduled',
       tutor_notes: reason || 'Rescheduled by admin'
     });
 
-    // Cascade reschedule: Update all subsequent sessions in the same batch
-    let cascadedSessions = [];
-    if (timeDifference !== 0) {
-      const subsequentSessions = await Session.findAll({
-        where: {
-          batch_id: session.batch_id,
-          session_number: { [require('sequelize').Op.gt]: session.session_number },
-          status: 'Scheduled'
-        }
-      });
+    // Step 2: Find the highest session number in this batch
+    const maxSessionResult = await Session.findOne({
+      where: { batch_id: batch.id },
+      order: [['session_number', 'DESC']],
+      attributes: ['session_number']
+    });
 
-      for (const subsequentSession of subsequentSessions) {
-        const currentDateTime = new Date(subsequentSession.scheduled_datetime);
-        const newSubsequentDateTime = new Date(currentDateTime.getTime() + timeDifference);
-        
-        await subsequentSession.update({
-          scheduled_datetime: newSubsequentDateTime
-        });
+    const newSessionNumber = (maxSessionResult?.session_number || 0) + 1;
+
+    // Step 3: Create NEW session at the end with the rescheduled datetime
+    const newSession = await Session.create({
+      batch_id: batch.id,
+      session_number: newSessionNumber,
+      curriculum_topic: originalSession.curriculum_topic || `Session ${newSessionNumber}`,
+      scheduled_datetime: new_datetime,
+      assigned_tutor_id: originalSession.assigned_tutor_id,
+      status: 'Scheduled'
+    });
+
+    // Step 4: Update batch progress to include the new session
+    const totalActiveSessions = await Session.count({
+      where: { 
+        batch_id: batch.id,
+        status: { [require('sequelize').Op.ne]: 'Rescheduled' } // Don't count rescheduled sessions
       }
-      cascadedSessions = subsequentSessions;
-    }
+    });
+
+    const completedSessions = await Session.count({
+      where: { 
+        batch_id: batch.id,
+        status: 'Completed'
+      }
+    });
+
+    await batch.update({
+      progress: {
+        ...batch.progress,
+        total_sessions: totalActiveSessions,
+        current_session: batch.progress?.current_session || 1,
+        completed_sessions: completedSessions
+      }
+    });
+
+    // Return detailed response
+    const updatedOriginalSession = await Session.findByPk(sessionId, {
+      include: [
+        { model: Batch, as: 'batch', include: [{ model: Course, as: 'course' }] },
+        { model: User, as: 'assignedTutor' }
+      ]
+    });
+
+    const createdNewSession = await Session.findByPk(newSession.id, {
+      include: [
+        { model: Batch, as: 'batch', include: [{ model: Course, as: 'course' }] },
+        { model: User, as: 'assignedTutor' }
+      ]
+    });
+
+    const rescheduledCount = await Session.count({
+      where: { batch_id: batch.id, status: 'Rescheduled' }
+    });
 
     res.json({
-      message: 'Session rescheduled successfully with cascade updates',
-      session: await Session.findByPk(sessionId, {
-        include: [
-          { model: Batch, as: 'batch', include: [{ model: Course, as: 'course' }] },
-          { model: User, as: 'assignedTutor' }
-        ]
-      }),
-      cascaded_sessions: cascadedSessions?.length || 0
+      message: 'Session rescheduled successfully with new session added at the end',
+      original_session: updatedOriginalSession,
+      new_session: createdNewSession,
+      batch_info: {
+        total_active_sessions: totalActiveSessions,
+        total_sessions_including_rescheduled: totalActiveSessions + rescheduledCount,
+        rescheduled_count: rescheduledCount,
+        original_session_number: originalSession.session_number,
+        new_session_number: newSessionNumber
+      }
     });
 
   } catch (error) {
