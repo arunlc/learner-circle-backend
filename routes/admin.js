@@ -163,7 +163,9 @@ router.put('/courses/:id', [
   }
 });
 
-// FIXED: Get materials for specific batch - This was the broken line 166
+// CLEANED ADMIN BACKEND - Replace the materials routes in your admin.js with these:
+
+// Get materials for specific batch
 router.get('/batches/:id/materials', async (req, res) => {
   try {
     const batchId = req.params.id;
@@ -196,7 +198,7 @@ router.get('/batches/:id/materials', async (req, res) => {
   }
 });
 
-// Add material to batch
+// Add material to batch - CLEANED VERSION
 router.post('/batches/:id/materials', [
   body('name').notEmpty().trim().withMessage('Material name is required'),
   body('type').isIn(['document', 'video', 'audio', 'link', 'image']).withMessage('Valid material type is required'),
@@ -212,7 +214,6 @@ router.post('/batches/:id/materials', [
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      console.error('❌ Validation errors:', errors.array());
       return res.status(400).json({ 
         error: 'Validation failed',
         details: errors.array().map(err => `${err.param}: ${err.msg}`).join(', '),
@@ -223,14 +224,10 @@ router.post('/batches/:id/materials', [
     const batchId = req.params.id;
     const { name, type, url, description, session_number, is_required } = req.body;
 
-    console.log('🔍 Received material data:', { name, type, url, description, session_number, is_required });
-
     const batch = await Batch.findByPk(batchId);
     if (!batch) {
       return res.status(404).json({ error: 'Batch not found' });
     }
-
-    console.log('✅ Batch found, current materials:', batch.materials);
 
     const materialData = {
       name: name.trim(),
@@ -240,25 +237,15 @@ router.post('/batches/:id/materials', [
       is_required: Boolean(is_required)
     };
 
-    console.log('🔍 Processed material data:', materialData);
-
     let updatedBatch;
     if (session_number && session_number !== '' && session_number !== null) {
       const sessionNum = parseInt(session_number);
-      console.log(`📝 Adding to session ${sessionNum}`);
-      // FIXED: Await the async method
       updatedBatch = await batch.addSessionMaterial(sessionNum, materialData, req.user.id);
     } else {
-      console.log('📚 Adding to course materials');
-      // FIXED: Await the async method
       updatedBatch = await batch.addCourseMaterial(materialData, req.user.id);
     }
 
-    // IMPROVED: No need to reload - the batch instance should be updated
-    console.log('✅ Material added successfully, UPDATED materials:', updatedBatch.materials);
-    console.log('✅ Course materials count after save:', updatedBatch.materials?.course_materials?.length);
-
-    // FIXED: Include fresh data with all relations
+    // Include fresh data with all relations
     const freshBatchWithRelations = await Batch.findByPk(batchId, {
       include: [
         { model: Course, as: 'course' },
@@ -270,18 +257,16 @@ router.post('/batches/:id/materials', [
       message: 'Material added successfully',
       batch: {
         ...freshBatchWithRelations.toJSON(),
-        materials: updatedBatch.materials // Use the updated materials
+        materials: updatedBatch.materials
       },
       materials: updatedBatch.materials
     });
 
   } catch (error) {
-    console.error('❌ Add material error:', error);
-    console.error('❌ Error stack:', error.stack);
+    console.error('Add material error:', error);
     res.status(500).json({ 
       error: 'Failed to add material',
-      details: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      details: error.message
     });
   }
 });
