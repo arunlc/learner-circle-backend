@@ -9,6 +9,50 @@ const router = express.Router();
 router.use(authMiddleware);
 router.use(roleGuard(['admin']));
 
+// Helper function to calculate next session date following batch schedule
+const calculateNextSessionDate = (batch, lastSessionDate) => {
+  const schedule = batch.schedule; // [{"day": "Tuesday", "time": "18:00"}, {"day": "Friday", "time": "18:00"}]
+  
+  if (!schedule || schedule.length === 0) {
+    // Fallback: add 7 days
+    const nextDate = new Date(lastSessionDate);
+    nextDate.setDate(nextDate.getDate() + 7);
+    return nextDate;
+  }
+
+  const dayMap = {
+    'Sunday': 0, 'Monday': 1, 'Tuesday': 2, 'Wednesday': 3,
+    'Thursday': 4, 'Friday': 5, 'Saturday': 6
+  };
+
+  let searchDate = new Date(lastSessionDate);
+  searchDate.setDate(searchDate.getDate() + 1); // Start from next day after last session
+
+  // Look for next available schedule slot within next 14 days
+  for (let i = 0; i < 14; i++) {
+    const dayName = Object.keys(dayMap).find(day => dayMap[day] === searchDate.getDay());
+    const scheduleMatch = schedule.find(slot => slot.day === dayName);
+    
+    if (scheduleMatch) {
+      const [hours, minutes] = scheduleMatch.time.split(':');
+      const sessionDateTime = new Date(searchDate);
+      sessionDateTime.setHours(parseInt(hours), parseInt(minutes), 0, 0);
+      
+      // Make sure it's not in the past and after the last session
+      if (sessionDateTime > new Date(lastSessionDate)) {
+        return sessionDateTime;
+      }
+    }
+    
+    searchDate.setDate(searchDate.getDate() + 1);
+  }
+
+  // Fallback if no valid date found
+  const fallbackDate = new Date(lastSessionDate);
+  fallbackDate.setDate(fallbackDate.getDate() + 7);
+  return fallbackDate;
+};
+
 // Dashboard data
 router.get('/dashboard', async (req, res) => {
   try {
@@ -977,10 +1021,11 @@ router.put('/sessions/:id', [
   }
 });
 
-// NEW RESCHEDULE LOGIC - Mark original as rescheduled, add new session at end
+// FIXED RESCHEDULE LOGIC - Mark original as rescheduled, add new session at end with correct number and date
 router.put('/sessions/:id/reschedule', [
-  body('new_datetime').isISO8601(),
-  body('reason').optional()
+  body('new_datetime').optional().isISO8601(), // Made optional for auto-scheduling
+  body('reason').optional(),
+  body('auto_schedule').optional().isBoolean() // New option for auto-scheduling
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -989,7 +1034,7 @@ router.put('/sessions/:id/reschedule', [
     }
 
     const sessionId = req.params.id;
-    const { new_datetime, reason } = req.body;
+    const { new_datetime, reason, auto_schedule } = req.body;
 
     // Get the session to reschedule with batch info
     const originalSession = await Session.findByPk(sessionId, {
@@ -1012,7 +1057,7 @@ router.put('/sessions/:id/reschedule', [
       tutor_notes: reason || 'Rescheduled by admin'
     });
 
-    // Step 2: Find the highest session number in this batch
+    // Step 2: Find the CORRECT next session number (highest + 1)
     const maxSessionResult = await Session.findOne({
       where: { batch_id: batch.id },
       order: [['session_number', 'DESC']],
@@ -1021,17 +1066,42 @@ router.put('/sessions/:id/reschedule', [
 
     const newSessionNumber = (maxSessionResult?.session_number || 0) + 1;
 
-    // Step 3: Create NEW session at the end with the rescheduled datetime
+    // Step 3: Determine the new session datetime
+    let newSessionDateTime;
+    
+    if (auto_schedule || !new_datetime) {
+      // Auto-schedule: Find the last scheduled session and calculate next date
+      const lastScheduledSession = await Session.findOne({
+        where: { 
+          batch_id: batch.id,
+          status: { [require('sequelize').Op.ne]: 'Rescheduled' } // Don't count rescheduled sessions
+        },
+        order: [['scheduled_datetime', 'DESC']]
+      });
+
+      if (lastScheduledSession) {
+        newSessionDateTime = calculateNextSessionDate(batch, lastScheduledSession.scheduled_datetime);
+      } else {
+        // Fallback: use batch start date + 7 days
+        const startDate = new Date(batch.start_date);
+        newSessionDateTime = calculateNextSessionDate(batch, startDate);
+      }
+    } else {
+      // Use provided datetime
+      newSessionDateTime = new Date(new_datetime);
+    }
+
+    // Step 4: Create NEW session at the end with CORRECT session number
     const newSession = await Session.create({
       batch_id: batch.id,
-      session_number: newSessionNumber,
+      session_number: newSessionNumber, // FIXED: Use correct incremented number
       curriculum_topic: originalSession.curriculum_topic || `Session ${newSessionNumber}`,
-      scheduled_datetime: new_datetime,
+      scheduled_datetime: newSessionDateTime, // FIXED: Use calculated or provided datetime
       assigned_tutor_id: originalSession.assigned_tutor_id,
       status: 'Scheduled'
     });
 
-    // Step 4: Update batch progress to include the new session
+    // Step 5: Update batch progress to include the new session
     const totalActiveSessions = await Session.count({
       where: { 
         batch_id: batch.id,
@@ -1083,7 +1153,12 @@ router.put('/sessions/:id/reschedule', [
         total_sessions_including_rescheduled: totalActiveSessions + rescheduledCount,
         rescheduled_count: rescheduledCount,
         original_session_number: originalSession.session_number,
-        new_session_number: newSessionNumber
+        new_session_number: newSessionNumber // FIXED: Now shows correct number
+      },
+      scheduling_info: {
+        auto_scheduled: auto_schedule || !new_datetime,
+        new_session_date: newSessionDateTime.toISOString(),
+        follows_batch_pattern: auto_schedule || !new_datetime
       }
     });
 
