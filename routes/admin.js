@@ -163,7 +163,38 @@ router.put('/courses/:id', [
   }
 });
 
-router.get('/batches/:id/materials
+// FIXED: Get materials for specific batch - This was the broken line 166
+router.get('/batches/:id/materials', async (req, res) => {
+  try {
+    const batchId = req.params.id;
+
+    const batch = await Batch.findByPk(batchId, {
+      include: [
+        { model: Course, as: 'course' },
+        { model: User, as: 'currentTutor' },
+        {
+          model: Session,
+          as: 'sessions',
+          attributes: ['id', 'session_number', 'curriculum_topic', 'scheduled_datetime', 'status'],
+          order: [['session_number', 'ASC']]
+        }
+      ]
+    });
+
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+
+    res.json({
+      batch: batch.toJSON(),
+      materials: batch.materials || { course_materials: [], session_materials: {} }
+    });
+
+  } catch (error) {
+    console.error('Get batch materials error:', error);
+    res.status(500).json({ error: 'Failed to fetch batch materials' });
+  }
+});
 
 // Add material to batch
 router.post('/batches/:id/materials', [
@@ -415,6 +446,7 @@ router.get('/materials/overview', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch materials overview' });
   }
 });
+
 // Batch management
 router.post('/batches', [
   body('course_id').isUUID(),
