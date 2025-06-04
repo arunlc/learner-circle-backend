@@ -111,12 +111,17 @@ const Batch = sequelize.define('Batch', {
 // Replace the methods in your Batch.js with these enhanced versions:
 
 // Helper methods for materials management
-Batch.prototype.addCourseMaterial = function(material, addedByUserId) {
+// FIXED Batch.js Model - Replace the helper methods in your Batch.js with these corrected versions:
+
+// Helper methods for materials management - FIXED VERSION
+Batch.prototype.addCourseMaterial = async function(material, addedByUserId) {
   console.log('🔍 addCourseMaterial called with:', { material, addedByUserId });
   
-  const materials = this.materials || { course_materials: [], session_materials: {} };
-  console.log('🔍 Current materials:', materials);
+  // Get current materials or initialize
+  const currentMaterials = this.materials || { course_materials: [], session_materials: {} };
+  console.log('🔍 Current materials:', currentMaterials);
   
+  // Create new material object
   const newMaterial = {
     id: require('uuid').v4(),
     ...material,
@@ -126,21 +131,43 @@ Batch.prototype.addCourseMaterial = function(material, addedByUserId) {
   
   console.log('🔍 New material object:', newMaterial);
   
-  materials.course_materials.push(newMaterial);
-  console.log('🔍 Updated materials:', materials);
+  // CRITICAL FIX: Create a completely new object to ensure Sequelize detects the change
+  const updatedMaterials = {
+    course_materials: [...currentMaterials.course_materials, newMaterial],
+    session_materials: { ...currentMaterials.session_materials }
+  };
   
-  return this.update({ materials });
+  console.log('🔍 Updated materials object:', updatedMaterials);
+  
+  // FIXED: Use await and explicitly set the changed flag
+  try {
+    const result = await this.update(
+      { materials: updatedMaterials },
+      { 
+        fields: ['materials'],
+        returning: true
+      }
+    );
+    
+    console.log('✅ Database update successful');
+    
+    // CRITICAL: Update the instance's materials property
+    this.materials = updatedMaterials;
+    
+    return this;
+  } catch (error) {
+    console.error('❌ Database update failed:', error);
+    throw error;
+  }
 };
 
-Batch.prototype.addSessionMaterial = function(sessionNumber, material, addedByUserId) {
+Batch.prototype.addSessionMaterial = async function(sessionNumber, material, addedByUserId) {
   console.log('🔍 addSessionMaterial called with:', { sessionNumber, material, addedByUserId });
   
-  const materials = this.materials || { course_materials: [], session_materials: {} };
+  // Get current materials or initialize
+  const currentMaterials = this.materials || { course_materials: [], session_materials: {} };
   
-  if (!materials.session_materials[sessionNumber]) {
-    materials.session_materials[sessionNumber] = [];
-  }
-  
+  // Create new material object
   const newMaterial = {
     id: require('uuid').v4(),
     ...material,
@@ -150,31 +177,93 @@ Batch.prototype.addSessionMaterial = function(sessionNumber, material, addedByUs
   
   console.log('🔍 New session material object:', newMaterial);
   
-  materials.session_materials[sessionNumber].push(newMaterial);
-  console.log('🔍 Updated session materials:', materials);
+  // CRITICAL FIX: Create completely new nested objects
+  const sessionKey = sessionNumber.toString();
+  const updatedSessionMaterials = { ...currentMaterials.session_materials };
+  updatedSessionMaterials[sessionKey] = [
+    ...(updatedSessionMaterials[sessionKey] || []),
+    newMaterial
+  ];
   
-  return this.update({ materials });
+  const updatedMaterials = {
+    course_materials: [...currentMaterials.course_materials],
+    session_materials: updatedSessionMaterials
+  };
+  
+  console.log('🔍 Updated session materials:', updatedMaterials);
+  
+  // FIXED: Use await and explicitly set the changed flag
+  try {
+    const result = await this.update(
+      { materials: updatedMaterials },
+      { 
+        fields: ['materials'],
+        returning: true
+      }
+    );
+    
+    console.log('✅ Session material database update successful');
+    
+    // CRITICAL: Update the instance's materials property
+    this.materials = updatedMaterials;
+    
+    return this;
+  } catch (error) {
+    console.error('❌ Session material database update failed:', error);
+    throw error;
+  }
 };
 
-Batch.prototype.removeMaterial = function(materialId, sessionNumber = null) {
+Batch.prototype.removeMaterial = async function(materialId, sessionNumber = null) {
   console.log('🔍 removeMaterial called with:', { materialId, sessionNumber });
   
-  const materials = this.materials || { course_materials: [], session_materials: {} };
+  const currentMaterials = this.materials || { course_materials: [], session_materials: {} };
+  
+  let updatedMaterials;
   
   if (sessionNumber) {
     // Remove from session materials
-    if (materials.session_materials[sessionNumber]) {
-      materials.session_materials[sessionNumber] = materials.session_materials[sessionNumber]
+    const sessionKey = sessionNumber.toString();
+    const updatedSessionMaterials = { ...currentMaterials.session_materials };
+    
+    if (updatedSessionMaterials[sessionKey]) {
+      updatedSessionMaterials[sessionKey] = updatedSessionMaterials[sessionKey]
         .filter(mat => mat.id !== materialId);
     }
+    
+    updatedMaterials = {
+      course_materials: [...currentMaterials.course_materials],
+      session_materials: updatedSessionMaterials
+    };
   } else {
     // Remove from course materials
-    materials.course_materials = materials.course_materials
-      .filter(mat => mat.id !== materialId);
+    updatedMaterials = {
+      course_materials: currentMaterials.course_materials.filter(mat => mat.id !== materialId),
+      session_materials: { ...currentMaterials.session_materials }
+    };
   }
   
-  console.log('🔍 Materials after removal:', materials);
-  return this.update({ materials });
+  console.log('🔍 Materials after removal:', updatedMaterials);
+  
+  try {
+    const result = await this.update(
+      { materials: updatedMaterials },
+      { 
+        fields: ['materials'],
+        returning: true
+      }
+    );
+    
+    console.log('✅ Material removal database update successful');
+    
+    // CRITICAL: Update the instance's materials property
+    this.materials = updatedMaterials;
+    
+    return this;
+  } catch (error) {
+    console.error('❌ Material removal database update failed:', error);
+    throw error;
+  }
 };
 
 Batch.prototype.getStudentMaterials = function() {
